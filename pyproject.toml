@@ -1,0 +1,19 @@
+[project]
+name = "managarm-hwci"
+version = "0.1"
+authors = [
+    {name = "The Managarm Project", email = "info@managarm.org"}
+]
+license = "MIT"
+
+dependencies = [
+    "aiohttp",
+    "pydantic",
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["hwci"]
