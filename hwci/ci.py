@@ -7,7 +7,6 @@ import shutil
 import tempfile
 import termios
 import tomllib
-import tty
 import typing
 
 import hwci.aio
@@ -92,8 +91,39 @@ class Device:
         attrs = termios.tcgetattr(fd)
         assert len(attrs) == 7
 
-        # Set raw mode and baud rate.
-        tty.cfmakeraw(attrs)
+        # Set raw mode.
+        # This is adopted from the cfmakeraw() function in the tty module
+        # of the Python's stdlib (which is only available at Python 3.12+).
+        attrs[0] &= ~(
+            termios.IGNBRK
+            | termios.BRKINT
+            | termios.IGNPAR
+            | termios.PARMRK
+            | termios.INPCK
+            | termios.ISTRIP
+            | termios.INLCR
+            | termios.IGNCR
+            | termios.ICRNL
+            | termios.IXON
+            | termios.IXANY
+            | termios.IXOFF
+        )
+        attrs[1] &= ~termios.OPOST
+        attrs[2] &= ~(termios.PARENB | termios.CSIZE)
+        attrs[2] |= termios.CS8
+        attrs[3] &= ~(
+            termios.ECHO
+            | termios.ECHOE
+            | termios.ECHOK
+            | termios.ECHONL
+            | termios.ICANON
+            | termios.IEXTEN
+            | termios.ISIG
+            | termios.NOFLSH
+            | termios.TOSTOP
+        )
+
+        # Set baud rate.
         attrs[4] = baud  # ispeed
         attrs[5] = baud  # ospeed
 
