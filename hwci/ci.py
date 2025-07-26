@@ -29,6 +29,7 @@ class SwitchConfig(pydantic.BaseModel):
 
 
 class DeviceConfig(pydantic.BaseModel):
+    tftp: str
     uart: str
     switch: SwitchConfig
 
@@ -221,7 +222,7 @@ class Run:
             )
 
             await hwci.bootables.generate_tftp(
-                out="/srv/tftp/",
+                out=self.device.cfg.tftp,
                 profile=preset.bootables,
                 sysroot=sysroot,
             )
