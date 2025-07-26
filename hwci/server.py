@@ -1,6 +1,7 @@
 from aiohttp import web
 import asyncio
 import contextvars
+import logging
 import pydantic
 
 import hwci.ci
@@ -47,4 +48,5 @@ async def async_main():
 
 
 def main():
+    logging.basicConfig(level=logging.DEBUG)
     asyncio.run(async_main())

@@ -1,5 +1,6 @@
 import aiohttp
 import asyncio
+import logging
 import os
 import pydantic
 import shutil
@@ -13,6 +14,8 @@ import hwci.aio
 import hwci.bootables
 import hwci.shelly
 import hwci.xbps
+
+logger = logging.getLogger(__name__)
 
 
 class PresetConfig(pydantic.BaseModel):
@@ -60,7 +63,10 @@ class Engine:
     async def run(self):
         while True:
             run = await self._q.get()
-            await run._dispatch()
+            try:
+                await run._dispatch()
+            except Exception as e:
+                logger.error("Unhandled exception while dispatching run", exc_info=e)
 
 
 class Device:
@@ -166,6 +172,7 @@ class Run:
         cache_dir = os.path.realpath(os.path.join("xbps-cache", repo_name))
 
         with tempfile.TemporaryDirectory(prefix="sysroot-", dir=".") as sysroot:
+            logger.info("Preparing sysroot: %s", sysroot)
             # Copy keys into the sysroot, otherwise xbps-install will ask for confirmation.
             key_dir = os.path.join(sysroot, "var/db/xbps/keys/")
             os.makedirs(key_dir, exist_ok=True)
@@ -190,10 +197,12 @@ class Run:
             )
 
     async def _supervise(self, uart_task):
+        logger.info("Switching %s ON", self.device.name)
         await self.device._switch.flip_on()
 
         await asyncio.sleep(self.timeout)
 
+        logger.info("Switching %s OFF", self.device.name)
         await self.device._switch.flip_off()
 
         # Wait for the device to be truly off, then stop log collection.
