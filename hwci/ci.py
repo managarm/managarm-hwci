@@ -16,6 +16,10 @@ import hwci.xbps
 
 logger = logging.getLogger(__name__)
 
+# Global flag that causes all device access (UART capturing + switch on/off)
+# to be mocked. Useful for developing on a machine that has no devices attached.
+mock_devices = False
+
 
 class PresetConfig(pydantic.BaseModel):
     arch: str
@@ -174,13 +178,18 @@ class Run:
     async def _dispatch(self):
         await self._prepare()
 
-        await self.device._switch.ensure_off()
+        if not mock_devices:
+            await self.device._switch.ensure_off()
 
-        uart = open(
-            os.open(self.device._uart_path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK),
-            "rb",
-            buffering=0,
-        )
+        if not mock_devices:
+            uart_fd = os.open(
+                self.device._uart_path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK
+            )
+        else:
+            (mock_fd, uart_fd) = os.openpty()
+            os.set_blocking(uart_fd, False)
+
+        uart = open(uart_fd, "rb", buffering=0)
         self.device._setup_tty(uart)
 
         # Discard data on the TTY.
@@ -193,6 +202,9 @@ class Run:
             uart_task,
             supervise_task,
         )
+
+        if mock_devices:
+            os.close(mock_fd)
 
     # Sets up the TFTP directory for this run.
     async def _prepare(self):
@@ -229,12 +241,14 @@ class Run:
 
     async def _supervise(self, uart_task):
         logger.info("Switching %s ON", self.device.name)
-        await self.device._switch.flip_on()
+        if not mock_devices:
+            await self.device._switch.flip_on()
 
         await asyncio.sleep(self.timeout)
 
         logger.info("Switching %s OFF", self.device.name)
-        await self.device._switch.flip_off()
+        if not mock_devices:
+            await self.device._switch.flip_off()
 
         # Wait for the device to be truly off, then stop log collection.
         await asyncio.sleep(2)

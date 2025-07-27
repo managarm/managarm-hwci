@@ -1,4 +1,5 @@
 from aiohttp import web
+import argparse
 import asyncio
 import contextvars
 import logging
@@ -48,5 +49,14 @@ async def async_main():
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mock-devices", action="store_true")
+
+    args = parser.parse_args()
+
     logging.basicConfig(level=logging.DEBUG)
+
+    if args.mock_devices:
+        hwci.ci.mock_devices = True
+
     asyncio.run(async_main())
