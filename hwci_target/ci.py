@@ -9,10 +9,10 @@ import termios
 import tomllib
 import typing
 
-import hwci.aio
-import hwci.bootables
-import hwci.shelly
-import hwci.xbps
+import hwci_target.aio
+import hwci_target.bootables
+import hwci_target.shelly
+import hwci_target.xbps
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ class Device:
         self.name = name
         self.cfg = cfg
         self._uart_path = cfg.uart
-        self._switch = hwci.shelly.Switch(engine._http_client, cfg.switch.shelly)
+        self._switch = hwci_target.shelly.Switch(engine._http_client, cfg.switch.shelly)
 
     def _setup_tty(self, fd):
         baud = termios.B115200
@@ -225,7 +225,7 @@ class Run:
                     os.path.join(key_dir, file),
                 )
 
-            await hwci.xbps.install(
+            await hwci_target.xbps.install(
                 arch=preset.arch,
                 pkgs=preset.packages,
                 repo_url=repo_url,
@@ -233,7 +233,7 @@ class Run:
                 sysroot=sysroot,
             )
 
-            await hwci.bootables.generate_tftp(
+            await hwci_target.bootables.generate_tftp(
                 out=self.device.cfg.tftp,
                 profile=preset.bootables,
                 sysroot=sysroot,
@@ -260,7 +260,7 @@ class Run:
 
     async def _collect_uart(self, uart_file):
         with uart_file:
-            reader = hwci.aio.UartReader(uart_file.fileno())
+            reader = hwci_target.aio.UartReader(uart_file.fileno())
             while True:
                 try:
                     buf = await reader.read()

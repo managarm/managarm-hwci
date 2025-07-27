@@ -5,9 +5,9 @@ import contextvars
 import logging
 import pydantic
 
-import hwci.ci
+import hwci_target.ci
 
-ENGINE = contextvars.ContextVar("hwci.Engine")
+ENGINE = contextvars.ContextVar("hwci_target.server.ENGINE")
 
 
 class RunRequestData(pydantic.BaseModel):
@@ -23,7 +23,7 @@ async def post_run(request):
 
     engine = ENGINE.get()
     device = engine.get_device(req_data.device)
-    run = hwci.ci.Run(engine, device, timeout=req_data.timeout)
+    run = hwci_target.ci.Run(engine, device, timeout=req_data.timeout)
     run.submit()
 
     async for buf in run.iter_logs():
@@ -34,7 +34,7 @@ async def post_run(request):
 
 
 async def async_main():
-    engine = hwci.ci.engine_from_config_toml()
+    engine = hwci_target.ci.engine_from_config_toml()
     ENGINE.set(engine)
 
     app = web.Application()
@@ -57,6 +57,6 @@ def main():
     logging.basicConfig(level=logging.DEBUG)
 
     if args.mock_devices:
-        hwci.ci.mock_devices = True
+        hwci_target.ci.mock_devices = True
 
     asyncio.run(async_main())
