@@ -1,4 +1,5 @@
 import aiohttp
+import argparse
 import asyncio
 import hashlib
 import os
@@ -40,9 +41,9 @@ class Config(pydantic.BaseModel):
     presets: typing.Dict[str, PresetConfig]
 
 
-async def upload_object(sha256, blob, *, session):
+async def upload_object(sha256, blob, *, session, relay):
     response = await session.post(
-        f"http://localhost:1234/file/{sha256}",
+        f"http://{relay}:10898/file/{sha256}",
         data=blob,
     )
     response.raise_for_status()
@@ -53,7 +54,7 @@ def read_file(path):
         return f.read()
 
 
-async def run(cfg, preset, *, session):
+async def run(cfg, preset, *, session, relay):
     preset = cfg.presets[preset]
     repo_name = preset.repository
     repo_url = cfg.repositories[repo_name]
@@ -103,12 +104,14 @@ async def run(cfg, preset, *, session):
                 blob = tftp_contents[path]
                 sha256 = tftp_sha256[path]
                 print(f"Uploading {path} ({sha256})")
-                tg.create_task(upload_object(sha256, blob, session=session))
+                tg.create_task(
+                    upload_object(sha256, blob, session=session, relay=relay)
+                )
 
     print("Running hwci")
 
     response = await session.post(
-        "http://localhost:1234/run",
+        f"http://{relay}:10898/run",
         json={
             "device": "rpi4",
             "tftp": tftp_sha256,
@@ -120,14 +123,19 @@ async def run(cfg, preset, *, session):
         print(line)
 
 
-async def async_main(cfg, preset):
+async def async_main(cfg, preset, *, relay):
     async with aiohttp.ClientSession() as session:
-        await run(cfg, preset, session=session)
+        await run(cfg, preset, session=session, relay=relay)
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--relay", type=str, required=True)
+
+    args = parser.parse_args()
+
     with open("hwci.toml", "rb") as f:
         cfg_toml = tomllib.load(f)
     cfg = Config.model_validate(cfg_toml)
 
-    asyncio.run(async_main(cfg, "rpi4"))
+    asyncio.run(async_main(cfg, "rpi4", relay=args.relay))

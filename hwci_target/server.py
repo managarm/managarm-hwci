@@ -76,7 +76,7 @@ async def post_run(request):
     return response
 
 
-async def async_main():
+async def async_main(*, address, port):
     engine = hwci_target.ci.engine_from_config_toml()
     ENGINE.set(engine)
 
@@ -90,7 +90,7 @@ async def async_main():
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "localhost", 1234)
+    site = web.TCPSite(runner, address, port)
     await site.start()
 
     await engine.run()
@@ -98,6 +98,8 @@ async def async_main():
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--address", type=str, default="localhost")
+    parser.add_argument("--port", type=int, default=10898)
     parser.add_argument("--mock-devices", action="store_true")
 
     args = parser.parse_args()
@@ -107,4 +109,4 @@ def main():
     if args.mock_devices:
         hwci_target.ci.mock_devices = True
 
-    asyncio.run(async_main())
+    asyncio.run(async_main(address=args.address, port=args.port))
