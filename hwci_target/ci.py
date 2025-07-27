@@ -2,17 +2,15 @@ import aiohttp
 import asyncio
 import logging
 import os
+import pathlib
 import pydantic
 import shutil
-import tempfile
 import termios
 import tomllib
 import typing
 
 import hwci_target.aio
-import hwci_target.bootables
 import hwci_target.shelly
-import hwci_target.xbps
 
 logger = logging.getLogger(__name__)
 
@@ -139,15 +137,17 @@ class Run:
     __slots__ = (
         "engine",
         "device",
+        "tftp",
         "timeout",
         "_cond",
         "_done",
         "_logs",
     )
 
-    def __init__(self, engine, device, *, timeout=5):
+    def __init__(self, engine, device, *, tftp, timeout=5):
         self.engine = engine
         self.device = device
+        self.tftp = tftp
         self.timeout = timeout
         self._cond = asyncio.Condition()
         self._done = False
@@ -208,35 +208,13 @@ class Run:
 
     # Sets up the TFTP directory for this run.
     async def _prepare(self):
-        preset = self.engine.cfg.presets[self.device.name]
-        repo_name = preset.repository
-        repo_url = self.engine.cfg.repositories[repo_name]
-
-        cache_dir = os.path.realpath(os.path.join("xbps-cache", repo_name))
-
-        with tempfile.TemporaryDirectory(prefix="sysroot-", dir=".") as sysroot:
-            logger.info("Preparing sysroot: %s", sysroot)
-            # Copy keys into the sysroot, otherwise xbps-install will ask for confirmation.
-            key_dir = os.path.join(sysroot, "var/db/xbps/keys/")
-            os.makedirs(key_dir, exist_ok=True)
-            for file in os.listdir("xbps-keys"):
-                shutil.copyfile(
-                    os.path.join("xbps-keys", file),
-                    os.path.join(key_dir, file),
-                )
-
-            await hwci_target.xbps.install(
-                arch=preset.arch,
-                pkgs=preset.packages,
-                repo_url=repo_url,
-                cache_dir=cache_dir,
-                sysroot=sysroot,
-            )
-
-            await hwci_target.bootables.generate_tftp(
-                out=self.device.cfg.tftp,
-                profile=preset.bootables,
-                sysroot=sysroot,
+        for path, sha256 in self.tftp.items():
+            for part in pathlib.PurePath(path).parts:
+                if not part or part == "." or part == "..":
+                    raise RuntimeError(f"Path is rejected: {path}")
+            shutil.copyfile(
+                os.path.join("objects", sha256),
+                os.path.join(self.device.cfg.tftp, path),
             )
 
     async def _supervise(self, uart_task):
