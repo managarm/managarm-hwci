@@ -4,11 +4,11 @@ import logging
 import os
 import pathlib
 import pydantic
-import shutil
 import termios
 import tomllib
 import typing
 
+import hwci_cas
 import hwci_target.aio
 import hwci_target.shelly
 
@@ -45,6 +45,7 @@ class Config(pydantic.BaseModel):
 class Engine:
     __slots__ = (
         "cfg",
+        "cas",
         "_devices",
         "_q",
         "_http_client",
@@ -52,6 +53,7 @@ class Engine:
 
     def __init__(self, cfg):
         self.cfg = cfg
+        self.cas = hwci_cas.Store("objects")
         self._devices = {}
         self._q = asyncio.Queue()
         self._http_client = aiohttp.ClientSession()
@@ -208,12 +210,12 @@ class Run:
 
     # Sets up the TFTP directory for this run.
     async def _prepare(self):
-        for path, sha256 in self.tftp.items():
+        for path, hdigest in self.tftp.items():
             for part in pathlib.PurePath(path).parts:
                 if not part or part == "." or part == "..":
                     raise RuntimeError(f"Path is rejected: {path}")
-            shutil.copyfile(
-                os.path.join("objects", sha256),
+            self.engine.cas.extract(
+                hdigest,
                 os.path.join(self.device.cfg.tftp, path),
             )
 
