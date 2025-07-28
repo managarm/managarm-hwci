@@ -47,6 +47,7 @@ class Engine:
         "cfg",
         "cas",
         "_devices",
+        "_runs",
         "_q",
         "_http_client",
     )
@@ -55,6 +56,7 @@ class Engine:
         self.cfg = cfg
         self.cas = hwci_cas.Store("objects")
         self._devices = {}
+        self._runs = {}
         self._q = asyncio.Queue()
         self._http_client = aiohttp.ClientSession()
 
@@ -63,6 +65,12 @@ class Engine:
 
     def get_device(self, name):
         return self._devices[name]
+
+    def new_run(self, run_id, device, *, tftp):
+        self._runs[run_id] = Run(self, device, tftp=tftp)
+
+    def get_run(self, run_id):
+        return self._runs[run_id]
 
     async def run(self):
         while True:
@@ -78,6 +86,7 @@ class Device:
         "engine",
         "name",
         "cfg",
+        "run",
         "_uart_path",
         "_switch",
     )
@@ -86,6 +95,7 @@ class Device:
         self.engine = engine
         self.name = name
         self.cfg = cfg
+        self.run = None
         self._uart_path = cfg.uart
         self._switch = hwci_target.shelly.Switch(engine._http_client, cfg.switch.shelly)
 
@@ -196,6 +206,9 @@ class Run:
 
         # Discard data on the TTY.
         termios.tcflush(uart, termios.TCIOFLUSH)
+
+        if mock_devices:
+            os.write(mock_fd, b"Hello world!")
 
         uart_task = asyncio.create_task(self._collect_uart(uart))
         supervise_task = asyncio.create_task(self._supervise(uart_task))

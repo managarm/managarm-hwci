@@ -43,7 +43,7 @@ class Config(pydantic.BaseModel):
 
 async def upload_object(sha256, blob, *, session, relay):
     response = await session.post(
-        f"http://{relay}:10898/file/{sha256}",
+        f"http://{relay}:10899/file/{sha256}",
         data=blob,
     )
     response.raise_for_status()
@@ -111,7 +111,7 @@ async def run(cfg, preset, *, session, relay):
     print("Running hwci")
 
     response = await session.post(
-        f"http://{relay}:10898/run",
+        f"http://{relay}:10899/run",
         json={
             "device": "rpi4",
             "tftp": tftp_sha256,
@@ -119,8 +119,14 @@ async def run(cfg, preset, *, session, relay):
     )
     response.raise_for_status()
 
-    async for line in response.content:
-        print(line)
+    while True:
+        chunk = await response.content.read(4096)
+        if not chunk:
+            break
+        # TODO: This will fail if the chunk ends in the middle of a UTF-8 sequence.
+        #       We should use a structured protocol (e.g., NULL delimited JSON) to avoid this.
+        string = chunk.decode("utf-8")
+        print(string, end="", flush=True)
 
 
 async def async_main(cfg, preset, *, relay):
