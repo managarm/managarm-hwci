@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import tomllib
 import typing
+from urllib.parse import urljoin
 
 import hwci.bootables
 import hwci.xbps
@@ -45,7 +46,7 @@ class Config(pydantic.BaseModel):
 
 async def upload_object(hdigest, obj, *, session, relay, token):
     response = await session.post(
-        f"http://{relay}:10899/file/{hdigest}",
+        urljoin(f"{relay}/", f"file/{hdigest}"),
         headers={
             "Authorization": f"Bearer {token}",
         },
@@ -116,7 +117,7 @@ async def run(cfg, preset, *, session, relay, token):
     print("Running hwci")
 
     response = await session.post(
-        f"http://{relay}:10899/run",
+        urljoin(f"{relay}/", "run"),
         headers={
             "Authorization": f"Bearer {token}",
         },
@@ -140,7 +141,7 @@ async def run(cfg, preset, *, session, relay, token):
 
 async def authenticate(cfg, *, session, relay):
     nonce_response = await session.get(
-        f"http://{relay}:10899/auth/nonce",
+        urljoin(f"{relay}/", "auth/nonce"),
         raise_for_status=True,
     )
     nonce = await nonce_response.text()
@@ -164,7 +165,7 @@ async def authenticate(cfg, *, session, relay):
     signature = stdout.decode("ascii")
 
     authenticate_response = await session.post(
-        f"http://{relay}:10899/auth/ssh_key",
+        urljoin(f"{relay}/", "auth/ssh_key"),
         json={
             "nonce": nonce,
             "signature": signature,
