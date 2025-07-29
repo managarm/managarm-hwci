@@ -7,11 +7,12 @@ import logging
 import os
 import secrets
 import shlex
-import sqlite3
 import subprocess
 import tempfile
 import time
 import tomllib
+
+from hwci import sqlite_util
 
 logger = logging.getLogger(__name__)
 
@@ -56,22 +57,21 @@ class Auth:
             hashlib.new(self.HMAC_HASH).block_size,
         )
         self._nonce_seq = 1
-        self._auth_db = sqlite3.connect("auth.sqlite", autocommit=False)
+        self._auth_db = sqlite_util.connect_autocommit("auth.sqlite")
 
         # Migrate the DB schema to the newest version.
-        with self._auth_db:
+        with sqlite_util.transaction(self._auth_db):
             (db_version,) = self._auth_db.execute("PRAGMA user_version").fetchone()
             if db_version < 1:
-                self._auth_db.executescript("""
+                self._auth_db.execute("""
                     CREATE TABLE tokens (
                         identity TEXT,
                         token TEXT PRIMARY KEY,
                         nonce TEXT UNIQUE
                     )
-                    WITHOUT ROWID, STRICT;
-
-                    PRAGMA user_version = 1;
+                    WITHOUT ROWID, STRICT
                 """)
+                self._auth_db.execute("PRAGMA user_version = 1")
 
     # Generate a nonce for use in check_nonce():
     # - Nonce validation is stateless.
@@ -152,7 +152,7 @@ class Auth:
 
         # Generate an authentication token that we pass to the client.
         token = secrets.token_urlsafe(32)
-        with self._auth_db:
+        with sqlite_util.transaction(self._auth_db):
             self._auth_db.execute(
                 "INSERT INTO tokens (identity, token, nonce) VALUES (?, ?, ?)",
                 (identity, token, nonce),
@@ -162,11 +162,10 @@ class Auth:
 
     # Checks the validity of an access token.
     def validate_token(self, token):
-        with self._auth_db:
-            row = self._auth_db.execute(
-                "SELECT identity FROM tokens WHERE token = ?",
-                (token,),
-            ).fetchone()
+        row = self._auth_db.execute(
+            "SELECT identity FROM tokens WHERE token = ?",
+            (token,),
+        ).fetchone()
         if row is None:
             logger.warning("Token not found in auth DB")
             return False

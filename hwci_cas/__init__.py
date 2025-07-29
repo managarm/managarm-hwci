@@ -1,7 +1,8 @@
 import os
 import hashlib
 import re
-import sqlite3
+
+from hwci import sqlite_util
 
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 
@@ -10,24 +11,23 @@ class Store:
     __slots__ = ("path", "_db")
 
     def __init__(self, name, *, dirpath="."):
-        self._db = sqlite3.connect(
-            os.path.join(dirpath, f"{name}.sqlite"), autocommit=False
+        self._db = sqlite_util.connect_autocommit(
+            os.path.join(dirpath, f"{name}.sqlite")
         )
 
         # Migrate the DB schema to the newest version.
-        with self._db:
+        with sqlite_util.transaction(self._db):
             (db_version,) = self._db.execute("PRAGMA user_version").fetchone()
             if db_version < 1:
-                self._db.executescript("""
+                self._db.execute("""
                     CREATE TABLE objects (
                         hdigest TEXT PRIMARY KEY,
                         meta BLOB,
                         data BLOB
                     )
-                    WITHOUT ROWID, STRICT;
-
-                    PRAGMA user_version = 1;
+                    WITHOUT ROWID, STRICT
                 """)
+                self._db.execute("PRAGMA user_version = 1")
 
     def write_object(self, hdigest, obj):
         if not SHA256_RE.fullmatch(hdigest):
@@ -39,17 +39,16 @@ class Store:
                 f"SHA256 mismatch, expected {hdigest}, got {computed_hdigest}"
             )
 
-        with self._db:
+        with sqlite_util.transaction(self._db):
             self._db.execute(
                 "INSERT OR IGNORE INTO objects (hdigest, meta, data) VALUES (?, ?, ?)",
                 (computed_hdigest, obj.meta, obj.data),
             )
 
     def read_object(self, hdigest):
-        with self._db:
-            row = self._db.execute(
-                "SELECT meta, data FROM objects WHERE hdigest = ?", (hdigest,)
-            ).fetchone()
+        row = self._db.execute(
+            "SELECT meta, data FROM objects WHERE hdigest = ?", (hdigest,)
+        ).fetchone()
         (meta, data) = row
         return Object(meta, data)
 
