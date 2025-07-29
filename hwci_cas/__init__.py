@@ -1,46 +1,96 @@
 import os
 import hashlib
-import tempfile
 import re
-import shutil
+import sqlite3
 
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 
 
 class Store:
-    __slots__ = ("path",)
+    __slots__ = ("path", "_db")
 
-    def __init__(self, path):
-        self.path = path
+    def __init__(self, name, *, dirpath="."):
+        self._db = sqlite3.connect(
+            os.path.join(dirpath, f"{name}.sqlite"), autocommit=False
+        )
 
-    def write_object(self, hdigest, data):
+        # Migrate the DB schema to the newest version.
+        with self._db:
+            (db_version,) = self._db.execute("PRAGMA user_version").fetchone()
+            if db_version < 1:
+                self._db.executescript("""
+                    CREATE TABLE objects (
+                        hdigest TEXT PRIMARY KEY,
+                        meta BLOB,
+                        data BLOB
+                    )
+                    WITHOUT ROWID, STRICT;
+
+                    PRAGMA user_version = 1;
+                """)
+
+    def write_object(self, hdigest, obj):
         if not SHA256_RE.fullmatch(hdigest):
             raise RuntimeError(f"Rejecting hexdigest: {hdigest}")
 
-        computed_hdigest = hashlib.sha256(data).hexdigest()
+        computed_hdigest = obj.hdigest()
         if computed_hdigest != hdigest:
             raise RuntimeError(
                 f"SHA256 mismatch, expected {hdigest}, got {computed_hdigest}"
             )
 
-        committed = False
-        os.makedirs(self.path, exist_ok=True)
-        (fd, temp_path) = tempfile.mkstemp(dir=self.path, prefix="temp-")
-        try:
-            with open(fd, "wb") as f:
-                f.write(data)
-            os.rename(temp_path, os.path.join(self.path, computed_hdigest))
-            committed = True
-        finally:
-            if not committed:
-                os.unlink(temp_path)
+        with self._db:
+            self._db.execute(
+                "INSERT OR IGNORE INTO objects (hdigest, meta, data) VALUES (?, ?, ?)",
+                (computed_hdigest, obj.meta, obj.data),
+            )
 
     def read_object(self, hdigest):
-        with open(os.path.join(self.path, hdigest), "rb") as f:
-            return f.read()
+        with self._db:
+            row = self._db.execute(
+                "SELECT meta, data FROM objects WHERE hdigest = ?", (hdigest,)
+            ).fetchone()
+        (meta, data) = row
+        return Object(meta, data)
 
     def extract(self, hdigest, path):
-        shutil.copyfile(
-            os.path.join(self.path, hdigest),
-            path,
-        )
+        obj = self.read_object(hdigest)
+        with open(path, "wb") as f:
+            f.write(obj.data)
+
+
+class Object:
+    ALLOWED_META = {b"b"}
+
+    __slots__ = ("meta", "data")
+
+    @classmethod
+    def make_blob(Cls, data):
+        return Cls(b"b", data)
+
+    def __init__(self, meta, data):
+        if b"\0" in meta:
+            raise ValueError(f"Meta value must not contain null bytes: {meta}")
+        if meta not in self.ALLOWED_META:
+            raise ValueError(f"Meta value not allowed: {meta}")
+        self.meta = meta
+        self.data = data
+
+    # Computes the hexdigest() that is used to address this object.
+    def hdigest(self):
+        algo = hashlib.sha256()
+        algo.update(self.meta)
+        algo.update(b"\0")
+        algo.update(self.data)
+        return algo.hexdigest()
+
+
+def serialize(obj):
+    return b"\0".join([obj.meta, obj.data])
+
+
+def deserialize(buf):
+    (meta, null, data) = buf.partition(b"\0")
+    if not null:
+        raise ValueError("CAS object must contain meta data separator")
+    return Object(meta, data)

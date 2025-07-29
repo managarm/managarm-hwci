@@ -29,7 +29,7 @@ class Engine:
 
     def __init__(self, cfg):
         self.cfg = cfg
-        self.cas = hwci_cas.Store("relay/objects")
+        self.cas = hwci_cas.Store("relay_objects")
         self._devices = {}
         self._q = asyncio.Queue()
         self._http_client = aiohttp.ClientSession()
@@ -166,7 +166,7 @@ class Run:
 
         response = await self.engine._http_client.post(
             f"http://{self.device.host}:10898/file/{hdigest}",
-            data=self.engine.cas.read_object(hdigest),
+            data=hwci_cas.serialize(self.engine.cas.read_object(hdigest)),
         )
         response.raise_for_status()
 

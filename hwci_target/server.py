@@ -6,6 +6,7 @@ import logging
 import pydantic
 import typing
 
+import hwci_cas
 import hwci_target.ci
 
 ENGINE = contextvars.ContextVar("hwci_target.server.ENGINE")
@@ -22,10 +23,10 @@ class NewRunData(pydantic.BaseModel):
 
 async def post_file(request):
     hdigest = request.match_info["hdigest"]
-    data = await request.content.read()
+    buf = await request.content.read()
 
     engine = ENGINE.get()
-    engine.cas.write_object(hdigest, data)
+    engine.cas.write_object(hdigest, hwci_cas.deserialize(buf))
 
     return web.Response(text="OK")
 

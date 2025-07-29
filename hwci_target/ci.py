@@ -54,7 +54,7 @@ class Engine:
 
     def __init__(self, cfg):
         self.cfg = cfg
-        self.cas = hwci_cas.Store("objects")
+        self.cas = hwci_cas.Store("target_objects")
         self._devices = {}
         self._runs = {}
         self._q = asyncio.Queue()

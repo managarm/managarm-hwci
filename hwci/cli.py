@@ -1,7 +1,6 @@
 import aiohttp
 import argparse
 import asyncio
-import hashlib
 import os
 import pydantic
 import shutil
@@ -12,6 +11,7 @@ import typing
 
 import hwci.bootables
 import hwci.xbps
+import hwci_cas
 
 
 def walk_regular(base_path, subdir=None):
@@ -43,13 +43,13 @@ class Config(pydantic.BaseModel):
     presets: typing.Dict[str, PresetConfig]
 
 
-async def upload_object(sha256, blob, *, session, relay, token):
+async def upload_object(hdigest, obj, *, session, relay, token):
     response = await session.post(
-        f"http://{relay}:10899/file/{sha256}",
+        f"http://{relay}:10899/file/{hdigest}",
         headers={
             "Authorization": f"Bearer {token}",
         },
-        data=blob,
+        data=hwci_cas.serialize(obj),
     )
     response.raise_for_status()
 
@@ -96,22 +96,20 @@ async def run(cfg, preset, *, session, relay, token):
         )
 
         tftp_files = list(walk_regular(tftpdir))
-        tftp_contents = {
-            path: read_file(os.path.join(tftpdir, path)) for path in tftp_files
+        tftp_objs = {
+            path: hwci_cas.Object.make_blob(read_file(os.path.join(tftpdir, path)))
+            for path in tftp_files
         }
-        tftp_sha256 = {
-            path: hashlib.sha256(contents).hexdigest()
-            for path, contents in tftp_contents.items()
-        }
+        tftp_hdigests = {path: obj.hdigest() for path, obj in tftp_objs.items()}
 
         async with asyncio.TaskGroup() as tg:
             for path in tftp_files:
-                blob = tftp_contents[path]
-                sha256 = tftp_sha256[path]
-                print(f"Uploading {path} ({sha256})")
+                obj = tftp_objs[path]
+                hdigest = tftp_hdigests[path]
+                print(f"Uploading {path} ({hdigest})")
                 tg.create_task(
                     upload_object(
-                        sha256, blob, session=session, relay=relay, token=token
+                        hdigest, obj, session=session, relay=relay, token=token
                     )
                 )
 
@@ -124,7 +122,7 @@ async def run(cfg, preset, *, session, relay, token):
         },
         json={
             "device": "rpi4",
-            "tftp": tftp_sha256,
+            "tftp": tftp_hdigests,
             "timeout": 60,
         },
     )

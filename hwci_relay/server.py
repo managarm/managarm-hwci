@@ -7,6 +7,7 @@ import pydantic
 import re
 import typing
 
+import hwci_cas
 import hwci_relay.auth
 import hwci_relay.ci
 
@@ -44,10 +45,10 @@ async def post_auth_sshkey(request):
 
 async def post_file(request):
     hdigest = request.match_info["hdigest"]
-    data = await request.content.read()
+    buf = await request.content.read()
 
     engine = ENGINE.get()
-    engine.cas.write_object(hdigest, data)
+    engine.cas.write_object(hdigest, hwci_cas.deserialize(buf))
 
     return web.Response(text="OK")
 
