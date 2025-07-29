@@ -19,13 +19,6 @@ logger = logging.getLogger(__name__)
 mock_devices = False
 
 
-class PresetConfig(pydantic.BaseModel):
-    arch: str
-    repository: str
-    packages: list[str]
-    bootables: str
-
-
 class SwitchConfig(pydantic.BaseModel):
     shelly: str
 
@@ -38,8 +31,6 @@ class DeviceConfig(pydantic.BaseModel):
 
 class Config(pydantic.BaseModel):
     devices: typing.Dict[str, DeviceConfig]
-    repositories: typing.Dict[str, str]
-    presets: typing.Dict[str, PresetConfig]
 
 
 class Engine:
@@ -265,7 +256,7 @@ class Run:
 
 
 def engine_from_config_toml():
-    with open("config.toml", "rb") as f:
+    with open("target.toml", "rb") as f:
         cfg_toml = tomllib.load(f)
     cfg = Config.model_validate(cfg_toml)
     return Engine(cfg)

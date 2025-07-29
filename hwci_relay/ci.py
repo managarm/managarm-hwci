@@ -138,7 +138,6 @@ class Run:
 
         while True:
             chunk = await response.content.read(4096)
-            logger.info("received chunk: %d", len(chunk))
             if not chunk:
                 break
             async with self._cond:

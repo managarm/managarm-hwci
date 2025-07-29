@@ -52,13 +52,11 @@ class Auth:
     __slots__ = ("_nonce_key", "_nonce_seq", "_auth_db")
 
     def __init__(self):
-        os.makedirs("relay", exist_ok=True)
-
         self._nonce_key = secrets.token_bytes(
             hashlib.new(self.HMAC_HASH).block_size,
         )
         self._nonce_seq = 1
-        self._auth_db = sqlite3.connect("relay/auth.sqlite", autocommit=False)
+        self._auth_db = sqlite3.connect("auth.sqlite", autocommit=False)
 
         # Migrate the DB schema to the newest version.
         with self._auth_db:
