@@ -1,6 +1,7 @@
 import aiohttp
 import asyncio
 import logging
+import os
 import pydantic
 import tomllib
 import typing
@@ -179,8 +180,8 @@ class Run:
         response.raise_for_status()
 
 
-def engine_from_config_toml():
-    with open("relay.toml", "rb") as f:
+def engine_from_config_toml(*, confdir):
+    with open(os.path.join(confdir, "relay.toml"), "rb") as f:
         cfg_toml = tomllib.load(f)
     cfg = Config.model_validate(cfg_toml)
     return Engine(cfg)

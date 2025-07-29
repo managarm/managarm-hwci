@@ -108,9 +108,9 @@ async def auth_middleware(request, handler):
     return await handler(request)
 
 
-async def async_main(*, address, port):
-    auth = hwci_relay.auth.Auth()
-    engine = hwci_relay.ci.engine_from_config_toml()
+async def async_main(*, confdir, address, port):
+    auth = hwci_relay.auth.Auth(confdir=confdir)
+    engine = hwci_relay.ci.engine_from_config_toml(confdir=confdir)
     AUTH.set(auth)
     ENGINE.set(engine)
 
@@ -133,6 +133,7 @@ async def async_main(*, address, port):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--confdir", type=str, default=".")
     parser.add_argument("--address", type=str, default="localhost")
     parser.add_argument("--port", type=int, default=10899)
     parser.add_argument("--mock-targets", action="store_true")
@@ -144,4 +145,4 @@ def main():
     if args.mock_targets:
         hwci_relay.ci.mock_targets = True
 
-    asyncio.run(async_main(address=args.address, port=args.port))
+    asyncio.run(async_main(confdir=args.confdir, address=args.address, port=args.port))

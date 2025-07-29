@@ -50,9 +50,10 @@ async def ssh_check_novalidate(nonce, signature_path, *, namespace):
 class Auth:
     HMAC_HASH = "sha256"
 
-    __slots__ = ("_nonce_key", "_nonce_seq", "_auth_db")
+    __slots__ = ("confdir", "_nonce_key", "_nonce_seq", "_auth_db")
 
-    def __init__(self):
+    def __init__(self, *, confdir):
+        self.confdir = confdir
         self._nonce_key = secrets.token_bytes(
             hashlib.new(self.HMAC_HASH).block_size,
         )
@@ -142,7 +143,7 @@ class Auth:
         logger.info("Authentication attempt with SSH key: %s", pubkey)
 
         # Validate that the SSH key belongs to a known user identity.
-        with open("ssh_keys.toml", "rb") as f:
+        with open(os.path.join(self.confdir, "ssh_keys.toml"), "rb") as f:
             known_keys = tomllib.load(f)
         identity = known_keys.get(pubkey)
         if identity is None:
