@@ -5,6 +5,7 @@ import hashlib
 import os
 import pydantic
 import shutil
+import subprocess
 import tempfile
 import tomllib
 import typing
@@ -37,13 +38,17 @@ class PresetConfig(pydantic.BaseModel):
 
 
 class Config(pydantic.BaseModel):
+    ssh_identity_file: str
     repositories: typing.Dict[str, str]
     presets: typing.Dict[str, PresetConfig]
 
 
-async def upload_object(sha256, blob, *, session, relay):
+async def upload_object(sha256, blob, *, session, relay, token):
     response = await session.post(
         f"http://{relay}:10899/file/{sha256}",
+        headers={
+            "Authorization": f"Bearer {token}",
+        },
         data=blob,
     )
     response.raise_for_status()
@@ -54,7 +59,7 @@ def read_file(path):
         return f.read()
 
 
-async def run(cfg, preset, *, session, relay):
+async def run(cfg, preset, *, session, relay, token):
     preset = cfg.presets[preset]
     repo_name = preset.repository
     repo_url = cfg.repositories[repo_name]
@@ -105,13 +110,18 @@ async def run(cfg, preset, *, session, relay):
                 sha256 = tftp_sha256[path]
                 print(f"Uploading {path} ({sha256})")
                 tg.create_task(
-                    upload_object(sha256, blob, session=session, relay=relay)
+                    upload_object(
+                        sha256, blob, session=session, relay=relay, token=token
+                    )
                 )
 
     print("Running hwci")
 
     response = await session.post(
         f"http://{relay}:10899/run",
+        headers={
+            "Authorization": f"Bearer {token}",
+        },
         json={
             "device": "rpi4",
             "tftp": tftp_sha256,
@@ -129,9 +139,53 @@ async def run(cfg, preset, *, session, relay):
         print(string, end="", flush=True)
 
 
+async def authenticate(cfg, *, session, relay):
+    nonce_response = await session.get(
+        f"http://{relay}:10899/auth/nonce",
+        raise_for_status=True,
+    )
+    nonce = await nonce_response.text()
+
+    process = await asyncio.create_subprocess_exec(
+        "ssh-keygen",
+        "-Y",
+        "sign",
+        "-f",
+        os.path.expanduser(cfg.ssh_identity_file),
+        "-nhwci",
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    (stdout, stderr) = await process.communicate(nonce.encode("ascii"))
+    if process.returncode != 0:
+        raise RuntimeError(
+            f"ssh-keygen -Y sign failed with status {process.returncode}"
+        )
+    signature = stdout.decode("ascii")
+
+    authenticate_response = await session.post(
+        f"http://{relay}:10899/auth/ssh_key",
+        json={
+            "nonce": nonce,
+            "signature": signature,
+        },
+        raise_for_status=True,
+    )
+    token = await authenticate_response.text()
+
+    with open("hwci.token", "w") as f:
+        f.write(token)
+
+
 async def async_main(cfg, preset, *, relay):
     async with aiohttp.ClientSession() as session:
-        await run(cfg, preset, session=session, relay=relay)
+        if not os.path.exists("hwci.token"):
+            await authenticate(cfg, session=session, relay=relay)
+
+        with open("hwci.token", "r") as f:
+            token = f.read()
+        await run(cfg, preset, session=session, relay=relay, token=token)
 
 
 def main():
