@@ -74,7 +74,7 @@ class Run:
         "_logs",
     )
 
-    def __init__(self, engine, device, *, tftp, timeout=5):
+    def __init__(self, engine, device, *, tftp, timeout):
         self.engine = engine
         self.device = device
         self.run_id = str(uuid.uuid4())
@@ -151,7 +151,12 @@ class Run:
 
         response = await self.engine._http_client.post(
             f"http://{self.device.host}:10898/runs",
-            json={"run_id": self.run_id, "device": self.device.name, "tftp": self.tftp},
+            json={
+                "run_id": self.run_id,
+                "device": self.device.name,
+                "tftp": self.tftp,
+                "timeout": self.timeout,
+            },
         )
         response.raise_for_status()
 

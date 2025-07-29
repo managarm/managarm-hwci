@@ -66,8 +66,8 @@ class Engine:
     def get_device(self, name):
         return self._devices[name]
 
-    def new_run(self, run_id, device, *, tftp):
-        self._runs[run_id] = Run(self, device, tftp=tftp)
+    def new_run(self, run_id, device, *, tftp, timeout):
+        self._runs[run_id] = Run(self, device, tftp=tftp, timeout=timeout)
 
     def get_run(self, run_id):
         return self._runs[run_id]
@@ -156,7 +156,7 @@ class Run:
         "_logs",
     )
 
-    def __init__(self, engine, device, *, tftp, timeout=5):
+    def __init__(self, engine, device, *, tftp, timeout):
         self.engine = engine
         self.device = device
         self.tftp = tftp

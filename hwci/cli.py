@@ -125,6 +125,7 @@ async def run(cfg, preset, *, session, relay, token):
         json={
             "device": "rpi4",
             "tftp": tftp_sha256,
+            "timeout": 60,
         },
     )
     response.raise_for_status()

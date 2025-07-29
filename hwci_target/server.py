@@ -17,6 +17,7 @@ class NewRunData(pydantic.BaseModel):
     run_id: str
     device: str
     tftp: typing.Dict[str, str]
+    timeout: int
 
 
 async def post_file(request):
@@ -35,7 +36,7 @@ async def post_runs(request):
     data = NewRunData.model_validate(await request.json())
 
     device = engine.get_device(data.device)
-    engine.new_run(data.run_id, device, tftp=data.tftp)
+    engine.new_run(data.run_id, device, tftp=data.tftp, timeout=data.timeout)
 
     return web.Response(text="OK")
 
