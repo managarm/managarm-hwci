@@ -1,6 +1,7 @@
 import aiohttp
 import argparse
 import asyncio
+import json
 import os
 import pydantic
 import shutil
@@ -8,11 +9,24 @@ import subprocess
 import tempfile
 import tomllib
 import typing
+import urllib.parse
 from urllib.parse import urljoin
 
 import hwci.bootables
 import hwci.xbps
 import hwci_cas
+
+
+class SecretToken(pydantic.BaseModel):
+    token: str
+
+
+SecretTokenDict = pydantic.RootModel[dict[str, SecretToken]]
+
+secret_tokens = SecretTokenDict({})
+
+# Directory that stores secret_tokens.json.
+state_home = os.path.expanduser("~/.local/state/hwci")
 
 
 def walk_regular(base_path, subdir=None):
@@ -174,18 +188,46 @@ async def authenticate(cfg, *, session, relay):
     )
     token = await authenticate_response.text()
 
-    with open("hwci.token", "w") as f:
-        f.write(token)
+    secret_tokens.root[relay] = SecretToken(token=token)
+
+    # Write-back secret_tokens.json
+    secret_tokens_json = json.dumps(secret_tokens.model_dump())
+    os.makedirs(state_home, exist_ok=True)
+    with open(os.path.join(state_home, "secret_tokens.json"), "w") as f:
+        f.write(secret_tokens_json)
 
 
 async def async_main(cfg, preset, *, relay):
+    # Load secret_tokens.json.
+    try:
+        with open(os.path.join(state_home, "secret_tokens.json")) as f:
+            secret_tokens_json = json.load(f)
+    except FileNotFoundError:
+        pass
+    else:
+        secret_tokens.root = SecretTokenDict.model_validate(secret_tokens_json).root
+
     async with aiohttp.ClientSession() as session:
-        if not os.path.exists("hwci.token"):
+        if relay not in secret_tokens.root:
             await authenticate(cfg, session=session, relay=relay)
 
-        with open("hwci.token", "r") as f:
-            token = f.read()
+        token = secret_tokens.root[relay].token
         await run(cfg, preset, session=session, relay=relay, token=token)
+
+
+def normalize_api_url(url):
+    parts = urllib.parse.urlparse(url)
+    if parts.scheme not in {"http", "https"}:
+        raise ValueError("Relay URL requires http:// or https://")
+    # urljoin() normalizes the path to be absolute.
+    return urljoin(
+        urllib.parse.urlunparse(
+            # Ensure that the last component is interpreted as a directory.
+            # Otherwise, urljoin() will strip it.
+            parts._replace(path=f"{parts.path}/")
+        ),
+        ".",
+    )
 
 
 def main():
@@ -194,8 +236,11 @@ def main():
 
     args = parser.parse_args()
 
+    # Normalize the relay URL to ensure that we find the right entry in secret_tokens.json.
+    relay_url = normalize_api_url(args.relay)
+
     with open("hwci.toml", "rb") as f:
         cfg_toml = tomllib.load(f)
     cfg = Config.model_validate(cfg_toml)
 
-    asyncio.run(async_main(cfg, "rpi4", relay=args.relay))
+    asyncio.run(async_main(cfg, "rpi4", relay=relay_url))
