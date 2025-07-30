@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import tomllib
+import tqdm
 import typing
 import urllib.parse
 from urllib.parse import urljoin
@@ -123,13 +124,14 @@ class Run:
             self._tftp[relpath] = hdigest
 
     async def _launch(self):
-        print("Objects:")
+        print("Files:")
         for relpath in self._tftp.keys():
             print(f"    tftp: {relpath}")
 
-        async with asyncio.TaskGroup() as tg:
-            for hdigest, obj in self._objects.items():
-                tg.create_task(self._upload_object(hdigest, obj))
+        with tqdm.tqdm(total=len(self._objects)) as pbar:
+            async with asyncio.TaskGroup() as tg:
+                for hdigest, obj in self._objects.items():
+                    tg.create_task(self._upload_object(hdigest, obj, pbar=pbar))
 
         print("Running hwci")
 
@@ -155,16 +157,17 @@ class Run:
             string = chunk.decode("utf-8")
             print(string, end="", flush=True)
 
-    async def _upload_object(self, hdigest, obj):
-        print(f"Uploading {hdigest}")
-        response = await self.session.post(
+    async def _upload_object(self, hdigest, obj, *, pbar):
+        pbar.write(f"Uploading {hdigest}")
+        await self.session.post(
             urljoin(f"{self.relay}/", f"file/{hdigest}"),
             headers={
                 "Authorization": f"Bearer {self.token}",
             },
             data=hwci_cas.serialize(obj),
+            raise_for_status=True,
         )
-        response.raise_for_status()
+        pbar.update(1)
 
 
 async def authenticate(cfg, *, session, relay):
