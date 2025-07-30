@@ -12,7 +12,7 @@ import typing
 import urllib.parse
 from urllib.parse import urljoin
 
-import hwci.bootables
+import hwci.boot_artifacts
 import hwci.xbps
 import hwci_cas
 
@@ -49,7 +49,7 @@ class PresetConfig(pydantic.BaseModel):
     arch: str
     repository: str
     packages: list[str]
-    bootables: str
+    profile: str
 
 
 class Config(pydantic.BaseModel):
@@ -104,9 +104,9 @@ async def run(cfg, preset, *, session, relay, token):
             sysroot=sysroot,
         )
 
-        await hwci.bootables.generate_tftp(
+        await hwci.boot_artifacts.generate_tftp(
             out=tftpdir,
-            profile=preset.bootables,
+            profile=preset.profile,
             sysroot=sysroot,
         )
 
