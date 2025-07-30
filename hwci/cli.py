@@ -58,99 +58,113 @@ class Config(pydantic.BaseModel):
     presets: typing.Dict[str, PresetConfig]
 
 
-async def upload_object(hdigest, obj, *, session, relay, token):
-    response = await session.post(
-        urljoin(f"{relay}/", f"file/{hdigest}"),
-        headers={
-            "Authorization": f"Bearer {token}",
-        },
-        data=hwci_cas.serialize(obj),
-    )
-    response.raise_for_status()
+class Run:
+    __slots__ = ("session", "relay", "token", "_objects", "_tftp")
 
+    def __init__(self, *, session, relay, token):
+        self.session = session
+        self.relay = relay
+        self.token = token
+        # Maps hdigests to objects.
+        self._objects = {}
+        # Maps TFTP relative paths to hdigests.
+        self._tftp = {}
 
-def read_file(path):
-    with open(path, "rb") as f:
-        return f.read()
+    async def run_from_repos(self, cfg, preset):
+        pass
+        preset = cfg.presets[preset]
+        repo_name = preset.repository
+        repo_url = cfg.repositories[repo_name]
 
+        cache_dir = os.path.realpath(os.path.join("xbps-cache", repo_name))
 
-async def run(cfg, preset, *, session, relay, token):
-    preset = cfg.presets[preset]
-    repo_name = preset.repository
-    repo_url = cfg.repositories[repo_name]
+        with tempfile.TemporaryDirectory(prefix="hwci-", dir=".") as rundir:
+            sysroot = os.path.join(rundir, "sysroot")
 
-    cache_dir = os.path.realpath(os.path.join("xbps-cache", repo_name))
+            print(f"Preparing sysroot: {sysroot}")
 
-    with tempfile.TemporaryDirectory(prefix="hwci-", dir=".") as rundir:
-        sysroot = os.path.join(rundir, "sysroot")
-        tftpdir = os.path.join(rundir, "tftp")
+            # Copy keys into the sysroot, otherwise xbps-install will ask for confirmation.
+            key_dir = os.path.join(sysroot, "var/db/xbps/keys/")
+            os.makedirs(key_dir, exist_ok=True)
+            for file in os.listdir("xbps-keys"):
+                shutil.copyfile(
+                    os.path.join("xbps-keys", file),
+                    os.path.join(key_dir, file),
+                )
 
-        print(f"Preparing sysroot: {sysroot}")
-
-        # Copy keys into the sysroot, otherwise xbps-install will ask for confirmation.
-        key_dir = os.path.join(sysroot, "var/db/xbps/keys/")
-        os.makedirs(key_dir, exist_ok=True)
-        for file in os.listdir("xbps-keys"):
-            shutil.copyfile(
-                os.path.join("xbps-keys", file),
-                os.path.join(key_dir, file),
+            await hwci.xbps.install(
+                arch=preset.arch,
+                pkgs=preset.packages,
+                repo_url=repo_url,
+                cache_dir=cache_dir,
+                sysroot=sysroot,
             )
 
-        await hwci.xbps.install(
-            arch=preset.arch,
-            pkgs=preset.packages,
-            repo_url=repo_url,
-            cache_dir=cache_dir,
-            sysroot=sysroot,
-        )
+            await self._gen_tftp(preset.profile, sysroot=sysroot, rundir=rundir)
+            await self._launch()
+
+    async def _gen_tftp(self, profile, *, sysroot, rundir):
+        tftpdir = os.path.join(rundir, "tftp")
 
         await hwci.boot_artifacts.generate_tftp(
             out=tftpdir,
-            profile=preset.profile,
+            profile=profile,
             sysroot=sysroot,
         )
 
         tftp_files = list(walk_regular(tftpdir))
-        tftp_objs = {
-            path: hwci_cas.Object.make_blob(read_file(os.path.join(tftpdir, path)))
-            for path in tftp_files
-        }
-        tftp_hdigests = {path: obj.hdigest() for path, obj in tftp_objs.items()}
+        for relpath in tftp_files:
+            path = os.path.join(tftpdir, relpath)
+            with open(path, "rb") as f:
+                obj = hwci_cas.Object.make_blob(f.read())
+
+            hdigest = obj.hdigest()
+            self._objects.setdefault(hdigest, obj)
+            self._tftp[relpath] = hdigest
+
+    async def _launch(self):
+        print("Objects:")
+        for relpath in self._tftp.keys():
+            print(f"    tftp: {relpath}")
 
         async with asyncio.TaskGroup() as tg:
-            for path in tftp_files:
-                obj = tftp_objs[path]
-                hdigest = tftp_hdigests[path]
-                print(f"Uploading {path} ({hdigest})")
-                tg.create_task(
-                    upload_object(
-                        hdigest, obj, session=session, relay=relay, token=token
-                    )
-                )
+            for hdigest, obj in self._objects.items():
+                tg.create_task(self._upload_object(hdigest, obj))
 
-    print("Running hwci")
+        print("Running hwci")
 
-    response = await session.post(
-        urljoin(f"{relay}/", "run"),
-        headers={
-            "Authorization": f"Bearer {token}",
-        },
-        json={
-            "device": "rpi4",
-            "tftp": tftp_hdigests,
-            "timeout": 60,
-        },
-    )
-    response.raise_for_status()
+        response = await self.session.post(
+            urljoin(f"{self.relay}/", "run"),
+            headers={
+                "Authorization": f"Bearer {self.token}",
+            },
+            json={
+                "device": "rpi4",
+                "tftp": self._tftp,
+                "timeout": 60,
+            },
+        )
+        response.raise_for_status()
 
-    while True:
-        chunk = await response.content.read(4096)
-        if not chunk:
-            break
-        # TODO: This will fail if the chunk ends in the middle of a UTF-8 sequence.
-        #       We should use a structured protocol (e.g., NULL delimited JSON) to avoid this.
-        string = chunk.decode("utf-8")
-        print(string, end="", flush=True)
+        while True:
+            chunk = await response.content.read(4096)
+            if not chunk:
+                break
+            # TODO: This will fail if the chunk ends in the middle of a UTF-8 sequence.
+            #       We should use a structured protocol (e.g., NULL delimited JSON) to avoid this.
+            string = chunk.decode("utf-8")
+            print(string, end="", flush=True)
+
+    async def _upload_object(self, hdigest, obj):
+        print(f"Uploading {hdigest}")
+        response = await self.session.post(
+            urljoin(f"{self.relay}/", f"file/{hdigest}"),
+            headers={
+                "Authorization": f"Bearer {self.token}",
+            },
+            data=hwci_cas.serialize(obj),
+        )
+        response.raise_for_status()
 
 
 async def authenticate(cfg, *, session, relay):
@@ -212,7 +226,8 @@ async def async_main(cfg, preset, *, relay):
             await authenticate(cfg, session=session, relay=relay)
 
         token = secret_tokens.root[relay].token
-        await run(cfg, preset, session=session, relay=relay, token=token)
+        run = Run(session=session, relay=relay, token=token)
+        await run.run_from_repos(cfg, preset)
 
 
 def normalize_api_url(url):
