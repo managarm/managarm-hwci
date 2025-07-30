@@ -59,6 +59,22 @@ class Config(pydantic.BaseModel):
     presets: typing.Dict[str, PresetConfig]
 
 
+def nbytes_human_readable(n):
+    kib = 1024
+    mib = 1024 * kib
+    gib = 1024 * mib
+    tib = 1024 * gib
+    if n >= tib:
+        return f"{n / tib:.2f} TiB"
+    if n >= gib:
+        return f"{n / gib:.2f} GiB"
+    if n >= mib:
+        return f"{n / mib:.2f} MiB"
+    if n >= kib:
+        return f"{n / kib:.2f} KiB"
+    return f"{n} B"
+
+
 class Run:
     __slots__ = ("session", "relay", "token", "_objects", "_tftp")
 
@@ -72,7 +88,6 @@ class Run:
         self._tftp = {}
 
     async def run_from_repos(self, cfg, preset):
-        pass
         preset = cfg.presets[preset]
         repo_name = preset.repository
         repo_url = cfg.repositories[repo_name]
@@ -101,6 +116,13 @@ class Run:
                 sysroot=sysroot,
             )
 
+            await self._gen_tftp(preset.profile, sysroot=sysroot, rundir=rundir)
+            await self._launch()
+
+    async def run_from_sysroot(self, cfg, preset, sysroot):
+        preset = cfg.presets[preset]
+
+        with tempfile.TemporaryDirectory(prefix="hwci-", dir=".") as rundir:
             await self._gen_tftp(preset.profile, sysroot=sysroot, rundir=rundir)
             await self._launch()
 
@@ -158,7 +180,8 @@ class Run:
             print(string, end="", flush=True)
 
     async def _upload_object(self, hdigest, obj, *, pbar):
-        pbar.write(f"Uploading {hdigest}")
+        size = len(obj.data)
+        pbar.write(f"Uploading {hdigest} {nbytes_human_readable(size)}")
         await self.session.post(
             urljoin(f"{self.relay}/", f"file/{hdigest}"),
             headers={
@@ -214,16 +237,7 @@ async def authenticate(cfg, *, session, relay):
         f.write(secret_tokens_json)
 
 
-async def async_main(cfg, preset, *, relay):
-    # Load secret_tokens.json.
-    try:
-        with open(os.path.join(state_home, "secret_tokens.json")) as f:
-            secret_tokens_json = json.load(f)
-    except FileNotFoundError:
-        pass
-    else:
-        secret_tokens.root = SecretTokenDict.model_validate(secret_tokens_json).root
-
+async def async_run_from_repos(cfg, preset, *, relay):
     async with aiohttp.ClientSession() as session:
         if relay not in secret_tokens.root:
             await authenticate(cfg, session=session, relay=relay)
@@ -231,6 +245,16 @@ async def async_main(cfg, preset, *, relay):
         token = secret_tokens.root[relay].token
         run = Run(session=session, relay=relay, token=token)
         await run.run_from_repos(cfg, preset)
+
+
+async def async_run_from_sysroot(cfg, preset, sysroot, *, relay):
+    async with aiohttp.ClientSession() as session:
+        if relay not in secret_tokens.root:
+            await authenticate(cfg, session=session, relay=relay)
+
+        token = secret_tokens.root[relay].token
+        run = Run(session=session, relay=relay, token=token)
+        await run.run_from_sysroot(cfg, preset, sysroot)
 
 
 def normalize_api_url(url):
@@ -252,6 +276,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--relay", type=str, required=True)
 
+    run_mutgrp = parser.add_mutually_exclusive_group(required=True)
+    run_mutgrp.add_argument("--repo", action="store_true")
+    run_mutgrp.add_argument("--sysroot", type=str)
+
     args = parser.parse_args()
 
     # Normalize the relay URL to ensure that we find the right entry in secret_tokens.json.
@@ -261,4 +289,16 @@ def main():
         cfg_toml = tomllib.load(f)
     cfg = Config.model_validate(cfg_toml)
 
-    asyncio.run(async_main(cfg, "rpi4", relay=relay_url))
+    # Load secret_tokens.json.
+    try:
+        with open(os.path.join(state_home, "secret_tokens.json")) as f:
+            secret_tokens_json = json.load(f)
+    except FileNotFoundError:
+        pass
+    else:
+        secret_tokens.root = SecretTokenDict.model_validate(secret_tokens_json).root
+
+    if args.repo:
+        asyncio.run(async_run_from_repos(cfg, "rpi4", relay=relay_url))
+    else:
+        asyncio.run(async_run_from_sysroot(cfg, "rpi4", args.sysroot, relay=relay_url))
