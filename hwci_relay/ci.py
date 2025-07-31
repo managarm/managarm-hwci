@@ -25,6 +25,7 @@ class Engine:
         "cfg",
         "cas",
         "_devices",
+        "_runs",
         "_q",
         "_http_client",
     )
@@ -33,6 +34,7 @@ class Engine:
         self.cfg = cfg
         self.cas = hwci_cas.Store("relay_objects")
         self._devices = {}
+        self._runs = {}
         self._q = asyncio.Queue()
         self._http_client = aiohttp.ClientSession()
 
@@ -41,6 +43,12 @@ class Engine:
 
     def get_device(self, name):
         return self._devices[name]
+
+    def new_run(self, run_id, device, *, tftp, timeout):
+        self._runs[run_id] = Run(self, device, tftp=tftp, timeout=timeout)
+
+    def get_run(self, run_id):
+        return self._runs[run_id]
 
     async def run(self):
         while True:

@@ -11,6 +11,7 @@ import tomllib
 import tqdm
 import typing
 import urllib.parse
+import uuid
 from urllib.parse import urljoin
 
 import hwci.boot_artifacts
@@ -147,6 +148,22 @@ class Run:
         print(f"Dissected files in {dissect_timer.elapsed:.2f} s")
 
     async def _launch(self):
+        run_id = str(uuid.uuid4())
+
+        response = await self.session.post(
+            urljoin(f"{self.relay}/", "runs"),
+            headers={
+                "Authorization": f"Bearer {self.token}",
+            },
+            json={
+                "run_id": run_id,
+                "device": "rpi4",
+                "tftp": self._tftp,
+                "timeout": 60,
+            },
+        )
+        response.raise_for_status()
+
         print("Files:")
         for relpath in self._tftp.keys():
             print(f"    tftp: {relpath}")
@@ -160,17 +177,12 @@ class Run:
                     tg.create_task(self._upload_objects(objects, pbar=pbar))
         print(f"Uploaded files in {upload_timer.elapsed:.2f} s")
 
-        print("Running hwci")
+        print("Launching run")
 
         response = await self.session.post(
-            urljoin(f"{self.relay}/", "run"),
+            urljoin(f"{self.relay}/", f"runs/{run_id}/launch"),
             headers={
                 "Authorization": f"Bearer {self.token}",
-            },
-            json={
-                "device": "rpi4",
-                "tftp": self._tftp,
-                "timeout": 60,
             },
         )
         response.raise_for_status()

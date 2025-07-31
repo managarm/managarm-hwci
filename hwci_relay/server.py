@@ -19,7 +19,8 @@ ENGINE = contextvars.ContextVar("hwci_relay.server.ENGINE")
 routes = web.RouteTableDef()
 
 
-class RunRequestData(pydantic.BaseModel):
+class NewRunData(pydantic.BaseModel):
+    run_id: str
     device: str
     timeout: float = 5
     tftp: typing.Dict[str, str]
@@ -64,18 +65,27 @@ async def post_files(request):
     return web.Response(text="OK")
 
 
-async def post_run(request):
-    req_data = RunRequestData.model_validate(await request.json())
+@routes.post("/runs")
+async def post_runs(request):
+    engine = ENGINE.get()
+    data = NewRunData.model_validate(await request.json())
+
+    device = engine.get_device(data.device)
+    engine.new_run(data.run_id, device, tftp=data.tftp, timeout=data.timeout)
+
+    return web.Response(text="OK")
+
+
+@routes.post("/runs/{run_id}/launch")
+async def post_launch(request):
+    engine = ENGINE.get()
+    run_id = request.match_info["run_id"]
+
+    run = engine.get_run(run_id)
+    run.submit()
 
     response = web.StreamResponse()
     await response.prepare(request)
-
-    engine = ENGINE.get()
-    device = engine.get_device(req_data.device)
-    run = hwci_relay.ci.Run(
-        engine, device, tftp=req_data.tftp, timeout=req_data.timeout
-    )
-    run.submit()
 
     async for buf in run.iter_logs():
         await response.write(buf)
@@ -127,11 +137,6 @@ async def async_main(*, confdir, address, port):
 
     app = web.Application(middlewares=[auth_middleware])
     app.add_routes(routes)
-    app.add_routes(
-        [
-            web.post("/run", post_run),
-        ]
-    )
 
     runner = web.AppRunner(app)
     await runner.setup()
