@@ -23,11 +23,13 @@ class NewRunData(pydantic.BaseModel):
     timeout: int
 
 
-@routes.post("/files")
+@routes.post("/runs/{run_id}/files")
 async def post_files(request):
+    run_id = request.match_info["run_id"]
     multipart = await request.multipart()
 
     engine = ENGINE.get()
+    run = engine.get_run(run_id)
     n = 0
     writes = []
     while True:
@@ -41,6 +43,8 @@ async def post_files(request):
     engine.cas.write_many_objects(writes)
     logger.info("Received %d objects", n)
 
+    run.notify_objects([hdigest for hdigest, obj in writes])
+
     return web.Response(text="OK")
 
 
@@ -53,6 +57,16 @@ async def post_runs(request):
     engine.new_run(data.run_id, device, tftp=data.tftp, timeout=data.timeout)
 
     return web.Response(text="OK")
+
+
+@routes.get("/runs/{run_id}/missing")
+async def get_missing(request):
+    run_id = request.match_info["run_id"]
+
+    engine = ENGINE.get()
+    run = engine.get_run(run_id)
+
+    return web.json_response(run.missing_objects())
 
 
 @routes.post("/runs/{run_id}/launch")

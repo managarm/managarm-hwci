@@ -78,12 +78,13 @@ def nbytes_human_readable(n):
 
 
 class Run:
-    __slots__ = ("session", "relay", "token", "_objects", "_tftp")
+    __slots__ = ("session", "relay", "token", "_run_id", "_objects", "_tftp")
 
     def __init__(self, *, session, relay, token):
         self.session = session
         self.relay = relay
         self.token = token
+        self._run_id = str(uuid.uuid4())
         # Maps hdigests to objects.
         self._objects = {}
         # Maps TFTP relative paths to hdigests.
@@ -148,15 +149,13 @@ class Run:
         print(f"Dissected files in {dissect_timer.elapsed:.2f} s")
 
     async def _launch(self):
-        run_id = str(uuid.uuid4())
-
         response = await self.session.post(
             urljoin(f"{self.relay}/", "runs"),
             headers={
                 "Authorization": f"Bearer {self.token}",
             },
             json={
-                "run_id": run_id,
+                "run_id": self._run_id,
                 "device": "rpi4",
                 "tftp": self._tftp,
                 "timeout": 60,
@@ -168,19 +167,21 @@ class Run:
         for relpath in self._tftp.keys():
             print(f"    tftp: {relpath}")
 
-        with (
-            hwci.timer_util.Timer() as upload_timer,
-            tqdm.tqdm(total=len(self._objects)) as pbar,
-        ):
-            async with asyncio.TaskGroup() as tg:
-                for objects in self._group_objects_for_upload():
-                    tg.create_task(self._upload_objects(objects, pbar=pbar))
+        with hwci.timer_util.Timer() as upload_timer:
+            while True:
+                missing = await self._get_missing()
+                if not missing:
+                    break
+                with tqdm.tqdm(total=len(missing)) as pbar:
+                    async with asyncio.TaskGroup() as tg:
+                        for objects in self._group_objects_for_upload(missing):
+                            tg.create_task(self._upload_objects(objects, pbar=pbar))
         print(f"Uploaded files in {upload_timer.elapsed:.2f} s")
 
         print("Launching run")
 
         response = await self.session.post(
-            urljoin(f"{self.relay}/", f"runs/{run_id}/launch"),
+            urljoin(f"{self.relay}/", f"runs/{self._run_id}/launch"),
             headers={
                 "Authorization": f"Bearer {self.token}",
             },
@@ -196,10 +197,11 @@ class Run:
             string = chunk.decode("utf-8")
             print(string, end="", flush=True)
 
-    def _group_objects_for_upload(self):
+    def _group_objects_for_upload(self, hdigests):
         chunk = {}
         n = 0
-        for hdigest, obj in self._objects.items():
+        for hdigest in hdigests:
+            obj = self._objects[hdigest]
             chunk[hdigest] = obj
             n += len(obj.data)
             if n > 2 * 1024 * 1024:
@@ -209,12 +211,22 @@ class Run:
         if chunk:
             yield chunk
 
+    async def _get_missing(self):
+        response = await self.session.get(
+            urljoin(f"{self.relay}/", f"runs/{self._run_id}/missing"),
+            headers={
+                "Authorization": f"Bearer {self.token}",
+            },
+            raise_for_status=True,
+        )
+        return await response.json()
+
     async def _upload_objects(self, objects, *, pbar):
         form_data = aiohttp.FormData()
         for hdigest, obj in objects.items():
             form_data.add_field("file", hwci_cas.serialize(obj), filename=hdigest)
         await self.session.post(
-            urljoin(f"{self.relay}/", "files"),
+            urljoin(f"{self.relay}/", f"runs/{self._run_id}/files"),
             headers={
                 "Authorization": f"Bearer {self.token}",
             },

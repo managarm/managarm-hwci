@@ -79,6 +79,8 @@ class Run:
         "run_id",
         "tftp",
         "timeout",
+        "_object_set",
+        "_missing_set",
         "_cond",
         "_done",
         "_logs",
@@ -90,9 +92,30 @@ class Run:
         self.run_id = str(uuid.uuid4())
         self.tftp = tftp
         self.timeout = timeout
+        self._object_set = set()
+        self._missing_set = set()
         self._cond = asyncio.Condition()
         self._done = False
         self._logs = bytearray()
+
+        for hdigest in self.tftp.values():
+            self.engine.cas.walk_tree_hdigests_into(
+                hdigest,
+                hdigest_set=self._object_set,
+                missing_set=self._missing_set,
+            )
+
+    def missing_objects(self):
+        return list(self._missing_set)
+
+    def notify_objects(self, new_hdigests):
+        self._missing_set.difference_update(new_hdigests)
+        for hdigest in new_hdigests:
+            self.engine.cas.walk_tree_hdigests_into(
+                hdigest,
+                hdigest_set=self._object_set,
+                missing_set=self._missing_set,
+            )
 
     def submit(self):
         self.engine._q.put_nowait(self)
@@ -130,16 +153,16 @@ class Run:
 
     async def _supervise(self):
         logger.info("Uploading objects")
-        with hwci.timer_util.Timer() as walk_timer:
-            hdigests = set()
-            for hdigest in self.tftp.values():
-                self.engine.cas.walk_tree_hdigests_into(hdigest, hdigest_set=hdigests)
-        logger.debug("Walked object tree in %.2f s", walk_timer.elapsed)
-
         with hwci.timer_util.Timer() as upload_timer:
-            async with asyncio.TaskGroup() as tg:
-                for objects in self._group_objects_for_upload(hdigests):
-                    tg.create_task(self._upload(objects))
+            while True:
+                missing_on_target = await self._get_missing_on_target()
+                if not missing_on_target:
+                    break
+                logger.debug("Target is missing %d objects", len(missing_on_target))
+
+                async with asyncio.TaskGroup() as tg:
+                    for objects in self._group_objects_for_upload(missing_on_target):
+                        tg.create_task(self._upload(objects))
         logger.debug("Uploaded objects in %.2f s", upload_timer.elapsed)
 
         logger.info("Launching run on %s", self.device.name)
@@ -191,6 +214,13 @@ class Run:
         )
         response.raise_for_status()
 
+    async def _get_missing_on_target(self):
+        response = await self.engine._http_client.get(
+            f"http://{self.device.host}:10898/runs/{self.run_id}/missing",
+            raise_for_status=True,
+        )
+        return await response.json()
+
     async def _upload(self, objects):
         if mock_targets:
             return
@@ -199,7 +229,7 @@ class Run:
         for hdigest, obj in objects.items():
             form_data.add_field("file", hwci_cas.serialize(obj), filename=hdigest)
         response = await self.engine._http_client.post(
-            f"http://{self.device.host}:10898/files",
+            f"http://{self.device.host}:10898/runs/{self.run_id}/files",
             data=form_data,
         )
         response.raise_for_status()

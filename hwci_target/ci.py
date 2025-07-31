@@ -142,6 +142,8 @@ class Run:
         "device",
         "tftp",
         "timeout",
+        "_object_set",
+        "_missing_set",
         "_cond",
         "_done",
         "_logs",
@@ -152,9 +154,30 @@ class Run:
         self.device = device
         self.tftp = tftp
         self.timeout = timeout
+        self._object_set = set()
+        self._missing_set = set()
         self._cond = asyncio.Condition()
         self._done = False
         self._logs = bytearray()
+
+        for hdigest in self.tftp.values():
+            self.engine.cas.walk_tree_hdigests_into(
+                hdigest,
+                hdigest_set=self._object_set,
+                missing_set=self._missing_set,
+            )
+
+    def missing_objects(self):
+        return list(self._missing_set)
+
+    def notify_objects(self, new_hdigests):
+        self._missing_set.difference_update(new_hdigests)
+        for hdigest in new_hdigests:
+            self.engine.cas.walk_tree_hdigests_into(
+                hdigest,
+                hdigest_set=self._object_set,
+                missing_set=self._missing_set,
+            )
 
     def submit(self):
         self.engine._q.put_nowait(self)

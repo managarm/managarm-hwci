@@ -58,32 +58,49 @@ class Store:
                 inserts,
             )
 
-    def read_meta(self, hdigest):
+    def read_meta_or_none(self, hdigest):
         row = self._db.execute(
             "SELECT meta FROM objects WHERE hdigest = ?", (hdigest,)
         ).fetchone()
         if row is None:
-            raise KeyError(f"Missing object: {hdigest}")
+            return None
         (meta,) = row
         return meta
 
-    def read_object(self, hdigest):
+    def read_meta(self, hdigest):
+        meta = self.read_meta_or_none(hdigest)
+        if meta is None:
+            raise KeyError(f"Missing object: {hdigest}")
+        return meta
+
+    def read_object_or_none(self, hdigest):
         row = self._db.execute(
             "SELECT meta, data FROM objects WHERE hdigest = ?", (hdigest,)
         ).fetchone()
         if row is None:
-            raise KeyError(f"Missing object: {hdigest}")
+            return None
         (meta, data) = row
         return Object(meta, data)
 
-    def walk_tree_hdigests_into(self, hdigest, *, hdigest_set):
+    def read_object(self, hdigest):
+        obj = self.read_object_or_none(hdigest)
+        if obj is None:
+            raise KeyError(f"Missing object: {hdigest}")
+        return obj
+
+    def walk_tree_hdigests_into(self, hdigest, *, hdigest_set, missing_set=None):
         q = [hdigest]
         while q:
             hdigest = q.pop()
             if hdigest in hdigest_set:
                 continue
+            meta = self.read_meta_or_none(hdigest)
+            if meta is None:
+                if missing_set is None:
+                    raise KeyError(f"Missing object: {hdigest}")
+                missing_set.add(hdigest)
+                continue
             hdigest_set.add(hdigest)
-            meta = self.read_meta(hdigest)
             if meta in {b"m"}:
                 obj = self.read_object(hdigest)
                 q.extend(obj.iter_linked())
