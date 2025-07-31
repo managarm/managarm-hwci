@@ -8,6 +8,7 @@ import typing
 import uuid
 
 import hwci_cas
+import hwci.timer_util
 
 logger = logging.getLogger(__name__)
 
@@ -121,9 +122,17 @@ class Run:
 
     async def _supervise(self):
         logger.info("Uploading objects")
-        async with asyncio.TaskGroup() as tg:
+        with hwci.timer_util.Timer() as walk_timer:
+            hdigests = set()
             for hdigest in self.tftp.values():
-                tg.create_task(self._upload(hdigest))
+                self.engine.cas.walk_tree_hdigests_into(hdigest, hdigest_set=hdigests)
+        logger.debug("Walked object tree in %.2f s", walk_timer.elapsed)
+
+        with hwci.timer_util.Timer() as upload_timer:
+            async with asyncio.TaskGroup() as tg:
+                for objects in self._group_objects_for_upload(hdigests):
+                    tg.create_task(self._upload(objects))
+        logger.debug("Uploaded objects in %.2f s", upload_timer.elapsed)
 
         logger.info("Launching run on %s", self.device.name)
         await self._launch()
@@ -145,6 +154,20 @@ class Run:
                 self._logs += chunk
                 self._cond.notify_all()
 
+    def _group_objects_for_upload(self, hdigests):
+        chunk = {}
+        n = 0
+        for hdigest in hdigests:
+            obj = self.engine.cas.read_object(hdigest)
+            chunk[hdigest] = obj
+            n += len(obj.data)
+            if n > 2 * 1024 * 1024:
+                yield chunk
+                chunk = {}
+                n = 0
+        if chunk:
+            yield chunk
+
     async def _new_run(self):
         if mock_targets:
             return
@@ -160,13 +183,16 @@ class Run:
         )
         response.raise_for_status()
 
-    async def _upload(self, hdigest):
+    async def _upload(self, objects):
         if mock_targets:
             return
 
+        form_data = aiohttp.FormData()
+        for hdigest, obj in objects.items():
+            form_data.add_field("file", hwci_cas.serialize(obj), filename=hdigest)
         response = await self.engine._http_client.post(
-            f"http://{self.device.host}:10898/file/{hdigest}",
-            data=hwci_cas.serialize(self.engine.cas.read_object(hdigest)),
+            f"http://{self.device.host}:10898/files",
+            data=form_data,
         )
         response.raise_for_status()
 

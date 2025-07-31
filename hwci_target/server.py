@@ -9,6 +9,8 @@ import typing
 import hwci_cas
 import hwci_target.ci
 
+logger = logging.getLogger(__name__)
+
 ENGINE = contextvars.ContextVar("hwci_target.server.ENGINE")
 
 routes = web.RouteTableDef()
@@ -21,12 +23,23 @@ class NewRunData(pydantic.BaseModel):
     timeout: int
 
 
-async def post_file(request):
-    hdigest = request.match_info["hdigest"]
-    buf = await request.content.read()
+@routes.post("/files")
+async def post_files(request):
+    multipart = await request.multipart()
 
     engine = ENGINE.get()
-    engine.cas.write_object(hdigest, hwci_cas.deserialize(buf))
+    n = 0
+    writes = []
+    while True:
+        part = await multipart.next()
+        if part is None:
+            break
+        hdigest = part.filename
+        buf = bytes(await part.read())
+        writes.append((hdigest, hwci_cas.deserialize(buf)))
+        n += 1
+    engine.cas.write_many_objects(writes)
+    logger.info("Received %d objects", n)
 
     return web.Response(text="OK")
 
@@ -78,11 +91,6 @@ async def async_main(*, address, port):
 
     app = web.Application()
     app.add_routes(routes)
-    app.add_routes(
-        [
-            web.post("/file/{hdigest}", post_file),
-        ]
-    )
 
     runner = web.AppRunner(app)
     await runner.setup()

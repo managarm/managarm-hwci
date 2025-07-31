@@ -14,6 +14,7 @@ import urllib.parse
 from urllib.parse import urljoin
 
 import hwci.boot_artifacts
+import hwci.timer_util
 import hwci.xbps
 import hwci_cas
 
@@ -135,25 +136,29 @@ class Run:
             sysroot=sysroot,
         )
 
-        tftp_files = list(walk_regular(tftpdir))
-        for relpath in tftp_files:
-            path = os.path.join(tftpdir, relpath)
-            with open(path, "rb") as f:
-                obj = hwci_cas.Object.make_blob(f.read())
-
-            hdigest = obj.hdigest()
-            self._objects.setdefault(hdigest, obj)
-            self._tftp[relpath] = hdigest
+        with hwci.timer_util.Timer() as dissect_timer:
+            tftp_files = list(walk_regular(tftpdir))
+            for relpath in tftp_files:
+                path = os.path.join(tftpdir, relpath)
+                with open(path, "rb") as f:
+                    dissector = hwci_cas.Dissector(f)
+                    hdigest = await dissector.dissect_into(object_dict=self._objects)
+                self._tftp[relpath] = hdigest
+        print(f"Dissected files in {dissect_timer.elapsed:.2f} s")
 
     async def _launch(self):
         print("Files:")
         for relpath in self._tftp.keys():
             print(f"    tftp: {relpath}")
 
-        with tqdm.tqdm(total=len(self._objects)) as pbar:
+        with (
+            hwci.timer_util.Timer() as upload_timer,
+            tqdm.tqdm(total=len(self._objects)) as pbar,
+        ):
             async with asyncio.TaskGroup() as tg:
-                for hdigest, obj in self._objects.items():
-                    tg.create_task(self._upload_object(hdigest, obj, pbar=pbar))
+                for objects in self._group_objects_for_upload():
+                    tg.create_task(self._upload_objects(objects, pbar=pbar))
+        print(f"Uploaded files in {upload_timer.elapsed:.2f} s")
 
         print("Running hwci")
 
@@ -179,18 +184,32 @@ class Run:
             string = chunk.decode("utf-8")
             print(string, end="", flush=True)
 
-    async def _upload_object(self, hdigest, obj, *, pbar):
-        size = len(obj.data)
-        pbar.write(f"Uploading {hdigest} {nbytes_human_readable(size)}")
+    def _group_objects_for_upload(self):
+        chunk = {}
+        n = 0
+        for hdigest, obj in self._objects.items():
+            chunk[hdigest] = obj
+            n += len(obj.data)
+            if n > 2 * 1024 * 1024:
+                yield chunk
+                chunk = {}
+                n = 0
+        if chunk:
+            yield chunk
+
+    async def _upload_objects(self, objects, *, pbar):
+        form_data = aiohttp.FormData()
+        for hdigest, obj in objects.items():
+            form_data.add_field("file", hwci_cas.serialize(obj), filename=hdigest)
         await self.session.post(
-            urljoin(f"{self.relay}/", f"file/{hdigest}"),
+            urljoin(f"{self.relay}/", "files"),
             headers={
                 "Authorization": f"Bearer {self.token}",
             },
-            data=hwci_cas.serialize(obj),
+            data=form_data,
             raise_for_status=True,
         )
-        pbar.update(1)
+        pbar.update(len(objects))
 
 
 async def authenticate(cfg, *, session, relay):

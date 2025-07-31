@@ -43,12 +43,23 @@ async def post_auth_sshkey(request):
     return web.Response(text=token)
 
 
-async def post_file(request):
-    hdigest = request.match_info["hdigest"]
-    buf = await request.content.read()
+@routes.post("/files")
+async def post_files(request):
+    multipart = await request.multipart()
 
     engine = ENGINE.get()
-    engine.cas.write_object(hdigest, hwci_cas.deserialize(buf))
+    n = 0
+    writes = []
+    while True:
+        part = await multipart.next()
+        if part is None:
+            break
+        hdigest = part.filename
+        buf = bytes(await part.read())
+        writes.append((hdigest, hwci_cas.deserialize(buf)))
+        n += 1
+    engine.cas.write_many_objects(writes)
+    logger.info("Received %d objects", n)
 
     return web.Response(text="OK")
 
@@ -119,7 +130,6 @@ async def async_main(*, confdir, address, port):
     app.add_routes(
         [
             web.post("/run", post_run),
-            web.post("/file/{hdigest}", post_file),
         ]
     )
 
