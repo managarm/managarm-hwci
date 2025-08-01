@@ -164,8 +164,8 @@ class Run:
         response.raise_for_status()
 
         print("Files:")
-        for relpath in self._tftp.keys():
-            print(f"    tftp: {relpath}")
+        for relpath, hdigest in self._tftp.items():
+            print(f"    tftp: {relpath} ({hdigest})")
 
         nbytes = 0
         with hwci.timer_util.Timer() as upload_timer:

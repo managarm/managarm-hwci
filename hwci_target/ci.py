@@ -8,6 +8,7 @@ import termios
 import tomllib
 import typing
 
+import hwci.timer_util
 import hwci_cas
 import hwci_target.aio
 import hwci_target.shelly
@@ -160,24 +161,40 @@ class Run:
         self._done = False
         self._logs = bytearray()
 
-        for hdigest in self.tftp.values():
-            self.engine.cas.walk_tree_hdigests_into(
-                hdigest,
-                hdigest_set=self._object_set,
-                missing_set=self._missing_set,
-            )
+        with hwci.timer_util.Timer() as walk_timer:
+            for hdigest in self.tftp.values():
+                self.engine.cas.walk_tree_hdigests_into(
+                    hdigest,
+                    hdigest_set=self._object_set,
+                    missing_set=self._missing_set,
+                )
+        logger.debug(
+            "Walking %d trees took %.2f s (objects: %d, missing: %d)",
+            len(self.tftp),
+            walk_timer.elapsed,
+            len(self._object_set),
+            len(self._missing_set),
+        )
 
     def missing_objects(self):
         return list(self._missing_set)
 
     def notify_objects(self, new_hdigests):
         self._missing_set.difference_update(new_hdigests)
-        for hdigest in new_hdigests:
-            self.engine.cas.walk_tree_hdigests_into(
-                hdigest,
-                hdigest_set=self._object_set,
-                missing_set=self._missing_set,
-            )
+        with hwci.timer_util.Timer() as walk_timer:
+            for hdigest in new_hdigests:
+                self.engine.cas.walk_tree_hdigests_into(
+                    hdigest,
+                    hdigest_set=self._object_set,
+                    missing_set=self._missing_set,
+                )
+        logger.debug(
+            "Walking %d trees took %.2f s (objects: %d, missing: %d)",
+            len(new_hdigests),
+            walk_timer.elapsed,
+            len(self._object_set),
+            len(self._missing_set),
+        )
 
     def submit(self):
         self.engine._q.put_nowait(self)
