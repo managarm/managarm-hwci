@@ -25,18 +25,22 @@ class Store:
         )
 
         # Migrate the DB schema to the newest version.
+        # History:
+        # v1: Used a WITHOUT ROWID table which lead to poor performance
+        #     as it stored the (relatively large) blobs inside the B-tree.
         with sqlite_util.transaction(self._db):
             (db_version,) = self._db.execute("PRAGMA user_version").fetchone()
-            if db_version < 1:
+            if db_version < 2:
+                self._db.execute("DROP TABLE IF EXISTS objects")
                 self._db.execute("""
                     CREATE TABLE objects (
                         hdigest TEXT PRIMARY KEY,
                         meta BLOB,
                         data BLOB
                     )
-                    WITHOUT ROWID, STRICT
+                    STRICT
                 """)
-                self._db.execute("PRAGMA user_version = 1")
+                self._db.execute("PRAGMA user_version = 2")
 
     def write_object(self, hdigest, obj):
         singleton_list = [(hdigest, obj)]
