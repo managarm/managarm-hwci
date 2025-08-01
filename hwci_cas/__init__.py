@@ -1,11 +1,15 @@
 import asyncio
 import concurrent.futures
 import hashlib
+import logging
 import mmap
 import os
 import re
 
 from hwci import sqlite_util
+import hwci.timer_util
+
+logger = logging.getLogger(__name__)
 
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 
@@ -39,12 +43,14 @@ class Store:
         self.write_many_objects(singleton_list)
 
     def write_many_objects(self, iterable):
+        hash_timer = hwci.timer_util.Timer()
         inserts = []
         for hdigest, obj in iterable:
             if not SHA256_RE.fullmatch(hdigest):
                 raise RuntimeError(f"Rejecting hexdigest: {hdigest}")
 
-            computed_hdigest = obj.hdigest()
+            with hash_timer:
+                computed_hdigest = obj.hdigest()
             if computed_hdigest != hdigest:
                 raise RuntimeError(
                     f"SHA256 mismatch, expected {hdigest}, got {computed_hdigest}"
@@ -52,11 +58,20 @@ class Store:
 
             inserts.append((computed_hdigest, obj.meta, obj.data))
 
-        with sqlite_util.transaction(self._db):
+        with (
+            hwci.timer_util.Timer() as commit_timer,
+            sqlite_util.transaction(self._db),
+        ):
             self._db.executemany(
                 "INSERT OR IGNORE INTO objects (hdigest, meta, data) VALUES (?, ?, ?)",
                 inserts,
             )
+        logger.debug(
+            "Wrote %d objects (committed in %.2f s, hashing took %.2f s)",
+            len(inserts),
+            hash_timer.elapsed,
+            commit_timer.elapsed,
+        )
 
     def read_meta_or_none(self, hdigest):
         row = self._db.execute(

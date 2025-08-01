@@ -167,16 +167,33 @@ class Run:
         for relpath in self._tftp.keys():
             print(f"    tftp: {relpath}")
 
+        nbytes = 0
         with hwci.timer_util.Timer() as upload_timer:
             while True:
-                missing = await self._get_missing()
-                if not missing:
+                missing_on_relay = await self._get_missing_on_relay()
+                if not missing_on_relay:
                     break
-                with tqdm.tqdm(total=len(missing)) as pbar:
+                print(f"Relay is missing {len(missing_on_relay)} objects")
+
+                queue = missing_on_relay
+                with tqdm.tqdm(total=len(missing_on_relay), unit="objs") as pbar:
+                    semaphore = asyncio.Semaphore(4)
                     async with asyncio.TaskGroup() as tg:
-                        for objects in self._group_objects_for_upload(missing):
-                            tg.create_task(self._upload_objects(objects, pbar=pbar))
-        print(f"Uploaded files in {upload_timer.elapsed:.2f} s")
+                        while queue:
+                            await semaphore.acquire()
+                            objects = self._group_objects_for_upload(queue)
+                            task = tg.create_task(
+                                self._upload_objects(objects, pbar=pbar)
+                            )
+                            task.add_done_callback(lambda task: semaphore.release())
+                            nbytes += sum(len(obj.data) for obj in objects.values())
+
+        nbytes_per_s = nbytes / upload_timer.elapsed
+        print(
+            f"Uploaded files in {upload_timer.elapsed:.2f} s"
+            f" ({nbytes_human_readable(nbytes)} in total,"
+            f" {nbytes_human_readable(nbytes_per_s)}/s)"
+        )
 
         print("Launching run")
 
@@ -197,21 +214,19 @@ class Run:
             string = chunk.decode("utf-8")
             print(string, end="", flush=True)
 
-    def _group_objects_for_upload(self, hdigests):
+    def _group_objects_for_upload(self, queue):
         chunk = {}
         n = 0
-        for hdigest in hdigests:
+        while queue:
+            hdigest = queue.pop()
             obj = self._objects[hdigest]
             chunk[hdigest] = obj
             n += len(obj.data)
             if n > 2 * 1024 * 1024:
-                yield chunk
-                chunk = {}
-                n = 0
-        if chunk:
-            yield chunk
+                break
+        return chunk
 
-    async def _get_missing(self):
+    async def _get_missing_on_relay(self):
         response = await self.session.get(
             urljoin(f"{self.relay}/", f"runs/{self._run_id}/missing"),
             headers={

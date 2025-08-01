@@ -84,6 +84,8 @@ class Run:
         "_cond",
         "_done",
         "_logs",
+        "_retrieve_timer",
+        "_transfer_timer",
     )
 
     def __init__(self, engine, device, *, tftp, timeout):
@@ -97,6 +99,8 @@ class Run:
         self._cond = asyncio.Condition()
         self._done = False
         self._logs = bytearray()
+        self._retrieve_timer = hwci.timer_util.Timer()
+        self._transfer_timer = hwci.timer_util.Timer()
 
         for hdigest in self.tftp.values():
             self.engine.cas.walk_tree_hdigests_into(
@@ -153,6 +157,7 @@ class Run:
 
     async def _supervise(self):
         logger.info("Uploading objects")
+        nbytes = 0
         with hwci.timer_util.Timer() as upload_timer:
             while True:
                 missing_on_target = await self._get_missing_on_target()
@@ -160,10 +165,24 @@ class Run:
                     break
                 logger.debug("Target is missing %d objects", len(missing_on_target))
 
+                queue = missing_on_target
+                semaphore = asyncio.Semaphore(4)
                 async with asyncio.TaskGroup() as tg:
-                    for objects in self._group_objects_for_upload(missing_on_target):
-                        tg.create_task(self._upload(objects))
-        logger.debug("Uploaded objects in %.2f s", upload_timer.elapsed)
+                    while queue:
+                        await semaphore.acquire()
+                        with self._retrieve_timer:
+                            objects = self._group_objects_for_upload(queue)
+                        task = tg.create_task(self._upload(objects))
+                        task.add_done_callback(lambda task: semaphore.release())
+                        nbytes += sum(len(obj.data) for obj in objects.values())
+
+        logger.debug(
+            "Uploaded objects in %.2f s (retrieval: %.2f s, transfer: %.2f s, %.2f KiB)",
+            upload_timer.elapsed,
+            self._retrieve_timer.elapsed,
+            self._transfer_timer.elapsed,
+            nbytes / 1024,
+        )
 
         logger.info("Launching run on %s", self.device.name)
         await self._launch()
@@ -185,19 +204,17 @@ class Run:
                 self._logs += chunk
                 self._cond.notify_all()
 
-    def _group_objects_for_upload(self, hdigests):
+    def _group_objects_for_upload(self, queue):
         chunk = {}
         n = 0
-        for hdigest in hdigests:
+        while queue:
+            hdigest = queue.pop()
             obj = self.engine.cas.read_object(hdigest)
             chunk[hdigest] = obj
             n += len(obj.data)
             if n > 2 * 1024 * 1024:
-                yield chunk
-                chunk = {}
-                n = 0
-        if chunk:
-            yield chunk
+                break
+        return chunk
 
     async def _new_run(self):
         if mock_targets:
@@ -225,14 +242,16 @@ class Run:
         if mock_targets:
             return
 
-        form_data = aiohttp.FormData()
-        for hdigest, obj in objects.items():
-            form_data.add_field("file", hwci_cas.serialize(obj), filename=hdigest)
-        response = await self.engine._http_client.post(
-            f"http://{self.device.host}:10898/runs/{self.run_id}/files",
-            data=form_data,
-        )
-        response.raise_for_status()
+        with hwci.timer_util.Timer() as timer:
+            form_data = aiohttp.FormData()
+            for hdigest, obj in objects.items():
+                form_data.add_field("file", hwci_cas.serialize(obj), filename=hdigest)
+            response = await self.engine._http_client.post(
+                f"http://{self.device.host}:10898/runs/{self.run_id}/files",
+                data=form_data,
+            )
+            response.raise_for_status()
+        self._transfer_timer.elapsed += timer.elapsed
 
     async def _launch(self):
         if mock_targets:
