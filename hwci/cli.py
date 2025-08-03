@@ -78,9 +78,10 @@ def nbytes_human_readable(n):
 
 
 class Run:
-    __slots__ = ("session", "relay", "token", "_run_id", "_objects", "_tftp")
+    __slots__ = ("device", "session", "relay", "token", "_run_id", "_objects", "_tftp")
 
-    def __init__(self, *, session, relay, token):
+    def __init__(self, *, device, session, relay, token):
+        self.device = device
         self.session = session
         self.relay = relay
         self.token = token
@@ -156,7 +157,7 @@ class Run:
             },
             json={
                 "run_id": self._run_id,
-                "device": "rpi4",
+                "device": self.device,
                 "tftp": self._tftp,
                 "timeout": 60,
             },
@@ -295,23 +296,23 @@ async def authenticate(cfg, *, session, relay):
         f.write(secret_tokens_json)
 
 
-async def async_run_from_repos(cfg, preset, *, relay):
+async def async_run_from_repos(cfg, device, preset, *, relay):
     async with aiohttp.ClientSession() as session:
         if relay not in secret_tokens.root:
             await authenticate(cfg, session=session, relay=relay)
 
         token = secret_tokens.root[relay].token
-        run = Run(session=session, relay=relay, token=token)
+        run = Run(device=device, session=session, relay=relay, token=token)
         await run.run_from_repos(cfg, preset)
 
 
-async def async_run_from_sysroot(cfg, preset, sysroot, *, relay):
+async def async_run_from_sysroot(cfg, device, preset, sysroot, *, relay):
     async with aiohttp.ClientSession() as session:
         if relay not in secret_tokens.root:
             await authenticate(cfg, session=session, relay=relay)
 
         token = secret_tokens.root[relay].token
-        run = Run(session=session, relay=relay, token=token)
+        run = Run(device=device, session=session, relay=relay, token=token)
         await run.run_from_sysroot(cfg, preset, sysroot)
 
 
@@ -333,6 +334,7 @@ def normalize_api_url(url):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--relay", type=str, required=True)
+    parser.add_argument("-d", "--device", type=str, required=True)
 
     run_mutgrp = parser.add_mutually_exclusive_group(required=True)
     run_mutgrp.add_argument("--repo", action="store_true")
@@ -357,6 +359,16 @@ def main():
         secret_tokens.root = SecretTokenDict.model_validate(secret_tokens_json).root
 
     if args.repo:
-        asyncio.run(async_run_from_repos(cfg, "rpi4", relay=relay_url))
+        asyncio.run(
+            async_run_from_repos(cfg, args.device, preset=args.device, relay=relay_url)
+        )
     else:
-        asyncio.run(async_run_from_sysroot(cfg, "rpi4", args.sysroot, relay=relay_url))
+        asyncio.run(
+            async_run_from_sysroot(
+                cfg,
+                args.device,
+                preset=args.device,
+                sysroot=args.sysroot,
+                relay=relay_url,
+            )
+        )
