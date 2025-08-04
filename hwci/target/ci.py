@@ -9,9 +9,9 @@ import tomllib
 import typing
 
 import hwci.timer_util
-import hwci_cas
-import hwci_target.aio
-import hwci_target.shelly
+import hwci.cas
+import hwci.target.aio
+import hwci.target.shelly
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ class Engine:
 
     def __init__(self, cfg):
         self.cfg = cfg
-        self.cas = hwci_cas.Store("target_objects")
+        self.cas = hwci.cas.Store("target_objects")
         self._devices = {}
         self._runs = {}
         self._q = asyncio.Queue()
@@ -89,7 +89,7 @@ class Device:
         self.cfg = cfg
         self.run = None
         self._uart_path = cfg.uart
-        self._switch = hwci_target.shelly.Switch(engine._http_client, cfg.switch.shelly)
+        self._switch = hwci.target.shelly.Switch(engine._http_client, cfg.switch.shelly)
 
     def _setup_tty(self, fd):
         baud = termios.B115200
@@ -284,7 +284,7 @@ class Run:
 
     async def _collect_uart(self, uart_file):
         with uart_file:
-            reader = hwci_target.aio.UartReader(uart_file.fileno())
+            reader = hwci.target.aio.UartReader(uart_file.fileno())
             while True:
                 try:
                     buf = await reader.read()

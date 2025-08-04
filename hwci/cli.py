@@ -17,7 +17,7 @@ from urllib.parse import urljoin
 import hwci.boot_artifacts
 import hwci.timer_util
 import hwci.xbps
-import hwci_cas
+import hwci.cas
 
 
 class SecretToken(pydantic.BaseModel):
@@ -144,7 +144,7 @@ class Run:
             for relpath in tftp_files:
                 path = os.path.join(tftpdir, relpath)
                 with open(path, "rb") as f:
-                    dissector = hwci_cas.Dissector(f)
+                    dissector = hwci.cas.Dissector(f)
                     hdigest = await dissector.dissect_into(object_dict=self._objects)
                 self._tftp[relpath] = hdigest
         print(f"Dissected files in {dissect_timer.elapsed:.2f} s")
@@ -240,7 +240,7 @@ class Run:
     async def _upload_objects(self, objects, *, pbar):
         form_data = aiohttp.FormData()
         for hdigest, obj in objects.items():
-            form_data.add_field("file", hwci_cas.serialize(obj), filename=hdigest)
+            form_data.add_field("file", hwci.cas.serialize(obj), filename=hdigest)
         await self.session.post(
             urljoin(f"{self.relay}/", f"runs/{self._run_id}/files"),
             headers={

@@ -17,4 +17,4 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["hwci", "hwci_cas", "hwci_relay", "hwci_target"]
+packages = ["hwci"]

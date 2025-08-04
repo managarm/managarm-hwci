@@ -7,14 +7,14 @@ import pydantic
 import re
 import typing
 
-import hwci_cas
-import hwci_relay.auth
-import hwci_relay.ci
+import hwci.cas
+import hwci.relay.auth
+import hwci.relay.ci
 
 logger = logging.getLogger(__name__)
 
-AUTH = contextvars.ContextVar("hwci_relay.server.AUTH")
-ENGINE = contextvars.ContextVar("hwci_relay.server.ENGINE")
+AUTH = contextvars.ContextVar("hwci.relay.server.AUTH")
+ENGINE = contextvars.ContextVar("hwci.relay.server.ENGINE")
 
 routes = web.RouteTableDef()
 
@@ -59,7 +59,7 @@ async def post_files(request):
             break
         hdigest = part.filename
         buf = bytes(await part.read())
-        writes.append((hdigest, hwci_cas.deserialize(buf)))
+        writes.append((hdigest, hwci.cas.deserialize(buf)))
         n += 1
     engine.cas.write_many_objects(writes)
     logger.info("Received %d objects", n)
@@ -144,8 +144,8 @@ async def auth_middleware(request, handler):
 
 
 async def async_main(*, confdir, address, port):
-    auth = hwci_relay.auth.Auth(confdir=confdir)
-    engine = hwci_relay.ci.engine_from_config_toml(confdir=confdir)
+    auth = hwci.relay.auth.Auth(confdir=confdir)
+    engine = hwci.relay.ci.engine_from_config_toml(confdir=confdir)
     AUTH.set(auth)
     ENGINE.set(engine)
 
@@ -172,6 +172,6 @@ def main():
     logging.basicConfig(level=logging.DEBUG)
 
     if args.mock_targets:
-        hwci_relay.ci.mock_targets = True
+        hwci.relay.ci.mock_targets = True
 
     asyncio.run(async_main(confdir=args.confdir, address=args.address, port=args.port))

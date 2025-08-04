@@ -6,12 +6,12 @@ import logging
 import pydantic
 import typing
 
-import hwci_cas
-import hwci_target.ci
+import hwci.cas
+import hwci.target.ci
 
 logger = logging.getLogger(__name__)
 
-ENGINE = contextvars.ContextVar("hwci_target.server.ENGINE")
+ENGINE = contextvars.ContextVar("hwci.target.server.ENGINE")
 
 routes = web.RouteTableDef()
 
@@ -38,7 +38,7 @@ async def post_files(request):
             break
         hdigest = part.filename
         buf = bytes(await part.read())
-        writes.append((hdigest, hwci_cas.deserialize(buf)))
+        writes.append((hdigest, hwci.cas.deserialize(buf)))
         n += 1
     engine.cas.write_many_objects(writes)
     logger.info("Received %d objects", n)
@@ -100,7 +100,7 @@ async def post_updates(request):
 
 
 async def async_main(*, address, port):
-    engine = hwci_target.ci.engine_from_config_toml()
+    engine = hwci.target.ci.engine_from_config_toml()
     ENGINE.set(engine)
 
     app = web.Application()
@@ -125,6 +125,6 @@ def main():
     logging.basicConfig(level=logging.DEBUG)
 
     if args.mock_devices:
-        hwci_target.ci.mock_devices = True
+        hwci.target.ci.mock_devices = True
 
     asyncio.run(async_main(address=args.address, port=args.port))

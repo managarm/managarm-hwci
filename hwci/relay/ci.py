@@ -7,7 +7,7 @@ import tomllib
 import typing
 import uuid
 
-import hwci_cas
+import hwci.cas
 import hwci.timer_util
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ class Engine:
 
     def __init__(self, cfg):
         self.cfg = cfg
-        self.cas = hwci_cas.Store("relay_objects")
+        self.cas = hwci.cas.Store("relay_objects")
         self._devices = {}
         self._runs = {}
         self._q = asyncio.Queue()
@@ -262,7 +262,7 @@ class Run:
         with hwci.timer_util.Timer() as timer:
             form_data = aiohttp.FormData()
             for hdigest, obj in objects.items():
-                form_data.add_field("file", hwci_cas.serialize(obj), filename=hdigest)
+                form_data.add_field("file", hwci.cas.serialize(obj), filename=hdigest)
             response = await self.engine._http_client.post(
                 f"http://{self.device.host}:10898/runs/{self.run_id}/files",
                 data=form_data,
