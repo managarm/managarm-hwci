@@ -20,7 +20,6 @@ class NewRunData(pydantic.BaseModel):
     run_id: str
     device: str
     tftp: typing.Dict[str, str]
-    timeout: int
 
 
 @routes.post("/runs/{run_id}/files")
@@ -54,7 +53,7 @@ async def post_runs(request):
     data = NewRunData.model_validate(await request.json())
 
     device = engine.get_device(data.device)
-    engine.new_run(data.run_id, device, tftp=data.tftp, timeout=data.timeout)
+    engine.new_run(data.run_id, device, tftp=data.tftp)
 
     return web.Response(text="OK")
 
@@ -76,6 +75,17 @@ async def post_launch(request):
 
     run = engine.get_run(run_id)
     run.submit()
+
+    return web.Response(text="OK")
+
+
+@routes.post("/runs/{run_id}/terminate")
+async def post_terminate(request):
+    engine = ENGINE.get()
+    run_id = request.match_info["run_id"]
+
+    run = engine.get_run(run_id)
+    run.terminate()
 
     return web.Response(text="OK")
 

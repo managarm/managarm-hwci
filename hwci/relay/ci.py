@@ -86,6 +86,7 @@ class Run:
         "_logs",
         "_retrieve_timer",
         "_transfer_timer",
+        "_terminate_event",
     )
 
     def __init__(self, engine, device, *, tftp, timeout):
@@ -101,6 +102,7 @@ class Run:
         self._logs = bytearray()
         self._retrieve_timer = hwci.timer_util.Timer()
         self._transfer_timer = hwci.timer_util.Timer()
+        self._terminate_event = asyncio.Event()
 
         with hwci.timer_util.Timer() as walk_timer:
             for hdigest in self.tftp.values():
@@ -140,6 +142,9 @@ class Run:
 
     def submit(self):
         self.engine._q.put_nowait(self)
+
+    def terminate(self):
+        self._terminate_event.set()
 
     async def iter_logs(self):
         p = 0
@@ -204,6 +209,15 @@ class Run:
         logger.info("Launching run on %s", self.device.name)
         await self._launch()
 
+        try:
+            async with asyncio.timeout(self.timeout):
+                await self._terminate_event.wait()
+            logger.info("Terminating run on request")
+        except TimeoutError:
+            logger.info("Terminating run on timeout")
+
+        await self._terminate()
+
     async def _collect(self):
         if mock_targets:
             return
@@ -243,7 +257,6 @@ class Run:
                 "run_id": self.run_id,
                 "device": self.device.name,
                 "tftp": self.tftp,
-                "timeout": self.timeout,
             },
         )
         response.raise_for_status()
@@ -276,6 +289,16 @@ class Run:
 
         response = await self.engine._http_client.post(
             f"http://{self.device.host}:10898/runs/{self.run_id}/launch",
+        )
+        response.raise_for_status()
+
+    async def _terminate(self):
+        if mock_targets:
+            return
+
+        logger.info("Terminating run on %s", self.device.name)
+        response = await self.engine._http_client.post(
+            f"http://{self.device.host}:10898/runs/{self.run_id}/terminate",
         )
         response.raise_for_status()
 

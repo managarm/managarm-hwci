@@ -58,8 +58,8 @@ class Engine:
     def get_device(self, name):
         return self._devices[name]
 
-    def new_run(self, run_id, device, *, tftp, timeout):
-        self._runs[run_id] = Run(self, device, tftp=tftp, timeout=timeout)
+    def new_run(self, run_id, device, *, tftp):
+        self._runs[run_id] = Run(self, device, tftp=tftp)
 
     def get_run(self, run_id):
         return self._runs[run_id]
@@ -142,24 +142,24 @@ class Run:
         "engine",
         "device",
         "tftp",
-        "timeout",
         "_object_set",
         "_missing_set",
         "_cond",
         "_done",
         "_logs",
+        "_terminate_event",
     )
 
-    def __init__(self, engine, device, *, tftp, timeout):
+    def __init__(self, engine, device, *, tftp):
         self.engine = engine
         self.device = device
         self.tftp = tftp
-        self.timeout = timeout
         self._object_set = set()
         self._missing_set = set()
         self._cond = asyncio.Condition()
         self._done = False
         self._logs = bytearray()
+        self._terminate_event = asyncio.Event()
 
         with hwci.timer_util.Timer() as walk_timer:
             for hdigest in self.tftp.values():
@@ -198,6 +198,9 @@ class Run:
 
     def submit(self):
         self.engine._q.put_nowait(self)
+
+    def terminate(self):
+        self._terminate_event.set()
 
     async def iter_logs(self):
         p = 0
@@ -268,7 +271,7 @@ class Run:
         if not mock_devices:
             await self.device._switch.flip_on()
 
-        await asyncio.sleep(self.timeout)
+        await self._terminate_event.wait()
 
         logger.info("Switching %s OFF", self.device.name)
         if not mock_devices:
