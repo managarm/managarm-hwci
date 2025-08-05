@@ -99,10 +99,24 @@ async def get_console(request):
     run_id = request.match_info["run_id"]
     run = engine.get_run(run_id)
 
-    async for buf in run.iter_logs():
-        await ws.send_json({"chunk": buf.decode("utf-8", errors="replace")})
+    async def forward_console():
+        try:
+            async for buf in run.iter_logs():
+                await ws.send_json({"chunk": buf.decode("utf-8", errors="replace")})
+        finally:
+            await ws.close()
 
-    await ws.close()
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(forward_console())
+
+        # We can only read from the WS inside this task (due to aiohttp limitations).
+        try:
+            async for msg in ws:
+                raise RuntimeError(f"Unexpected message type {msg.type} on WebSocket")
+        finally:
+            # Terminate the run when the WebSocket is disconnected.
+            run.terminate()
+
     return ws
 
 
