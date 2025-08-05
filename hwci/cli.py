@@ -206,14 +206,18 @@ class Run:
         )
         response.raise_for_status()
 
-        while True:
-            chunk = await response.content.read(4096)
-            if not chunk:
-                break
-            # TODO: This will fail if the chunk ends in the middle of a UTF-8 sequence.
-            #       We should use a structured protocol (e.g., NULL delimited JSON) to avoid this.
-            string = chunk.decode("utf-8")
-            print(string, end="", flush=True)
+        async with self.session.ws_connect(
+            urljoin(f"{self.relay}/", f"runs/{self._run_id}/console"),
+            headers={"Authorization": f"Bearer {self.token}"},
+        ) as ws:
+            async for msg in ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    data = json.loads(msg.data)
+                    print(data["chunk"], end="", flush=True)
+                else:
+                    raise RuntimeError(
+                        f"Unexpected message type {msg.type} on WebSocket"
+                    )
 
     def _group_objects_for_upload(self, queue):
         chunk = {}

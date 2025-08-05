@@ -90,6 +90,22 @@ async def get_missing(request):
     return web.json_response(run.missing_objects())
 
 
+@routes.get("/runs/{run_id}/console")
+async def get_console(request):
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+
+    engine = ENGINE.get()
+    run_id = request.match_info["run_id"]
+    run = engine.get_run(run_id)
+
+    async for buf in run.iter_logs():
+        await ws.send_json({"chunk": buf.decode("utf-8", errors="replace")})
+
+    await ws.close()
+    return ws
+
+
 @routes.post("/runs/{run_id}/launch")
 async def post_launch(request):
     engine = ENGINE.get()
@@ -98,14 +114,7 @@ async def post_launch(request):
     run = engine.get_run(run_id)
     run.submit()
 
-    response = web.StreamResponse()
-    await response.prepare(request)
-
-    async for buf in run.iter_logs():
-        await response.write(buf)
-    await response.write_eof()
-
-    return response
+    return web.Response(text="OK")
 
 
 no_auth_routes = {
