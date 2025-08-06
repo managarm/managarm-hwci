@@ -16,5 +16,6 @@ dependencies = [
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["hwci"]
+# Include hwci and all packages below it.
+[tool.setuptools.packages.find]
+include = ["hwci"]
