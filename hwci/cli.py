@@ -130,6 +130,10 @@ class Run:
             await self._gen_tftp(preset.profile, sysroot=sysroot, rundir=rundir)
             await self._launch()
 
+    async def run_from_tftp(self, tftpdir):
+        await self._dissect_tftp_dir(tftpdir)
+        await self._launch()
+
     async def _gen_tftp(self, profile, *, sysroot, rundir):
         tftpdir = os.path.join(rundir, "tftp")
 
@@ -138,7 +142,9 @@ class Run:
             profile=profile,
             sysroot=sysroot,
         )
+        await self._dissect_tftp_dir(tftpdir)
 
+    async def _dissect_tftp_dir(self, tftpdir):
         with hwci.timer_util.Timer() as dissect_timer:
             tftp_files = list(walk_regular(tftpdir))
             for relpath in tftp_files:
@@ -320,6 +326,16 @@ async def async_run_from_sysroot(cfg, device, preset, sysroot, *, relay):
         await run.run_from_sysroot(cfg, preset, sysroot)
 
 
+async def async_run_from_tftp(cfg, device, tftpdir, *, relay):
+    async with aiohttp.ClientSession() as session:
+        if relay not in secret_tokens.root:
+            await authenticate(cfg, session=session, relay=relay)
+
+        token = secret_tokens.root[relay].token
+        run = Run(device=device, session=session, relay=relay, token=token)
+        await run.run_from_tftp(tftpdir)
+
+
 def normalize_api_url(url):
     parts = urllib.parse.urlparse(url)
     if parts.scheme not in {"http", "https"}:
@@ -343,6 +359,7 @@ def main():
     run_mutgrp = parser.add_mutually_exclusive_group(required=True)
     run_mutgrp.add_argument("--repo", action="store_true")
     run_mutgrp.add_argument("--sysroot", type=str)
+    run_mutgrp.add_argument("--tftp", type=str)
 
     args = parser.parse_args()
 
@@ -366,7 +383,7 @@ def main():
         asyncio.run(
             async_run_from_repos(cfg, args.device, preset=args.device, relay=relay_url)
         )
-    else:
+    elif args.sysroot:
         asyncio.run(
             async_run_from_sysroot(
                 cfg,
@@ -375,4 +392,8 @@ def main():
                 sysroot=args.sysroot,
                 relay=relay_url,
             )
+        )
+    elif args.tftp:
+        asyncio.run(
+            async_run_from_tftp(cfg, args.device, tftpdir=args.tftp, relay=relay_url)
         )
