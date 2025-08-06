@@ -78,13 +78,23 @@ def nbytes_human_readable(n):
 
 
 class Run:
-    __slots__ = ("device", "session", "relay", "token", "_run_id", "_objects", "_tftp")
+    __slots__ = (
+        "device",
+        "session",
+        "relay",
+        "token",
+        "timeout",
+        "_run_id",
+        "_objects",
+        "_tftp",
+    )
 
-    def __init__(self, *, device, session, relay, token):
+    def __init__(self, *, device, session, relay, token, timeout):
         self.device = device
         self.session = session
         self.relay = relay
         self.token = token
+        self.timeout = timeout
         self._run_id = str(uuid.uuid4())
         # Maps hdigests to objects.
         self._objects = {}
@@ -165,7 +175,7 @@ class Run:
                 "run_id": self._run_id,
                 "device": self.device,
                 "tftp": self._tftp,
-                "timeout": 60,
+                "timeout": self.timeout,
             },
         )
         response.raise_for_status()
@@ -306,33 +316,39 @@ async def authenticate(cfg, *, session, relay):
         f.write(secret_tokens_json)
 
 
-async def async_run_from_repos(cfg, device, preset, *, relay):
+async def async_run_from_repos(cfg, device, preset, *, relay, timeout):
     async with aiohttp.ClientSession() as session:
         if relay not in secret_tokens.root:
             await authenticate(cfg, session=session, relay=relay)
 
         token = secret_tokens.root[relay].token
-        run = Run(device=device, session=session, relay=relay, token=token)
+        run = Run(
+            device=device, session=session, relay=relay, token=token, timeout=timeout
+        )
         await run.run_from_repos(cfg, preset)
 
 
-async def async_run_from_sysroot(cfg, device, preset, sysroot, *, relay):
+async def async_run_from_sysroot(cfg, device, preset, sysroot, *, relay, timeout):
     async with aiohttp.ClientSession() as session:
         if relay not in secret_tokens.root:
             await authenticate(cfg, session=session, relay=relay)
 
         token = secret_tokens.root[relay].token
-        run = Run(device=device, session=session, relay=relay, token=token)
+        run = Run(
+            device=device, session=session, relay=relay, token=token, timeout=timeout
+        )
         await run.run_from_sysroot(cfg, preset, sysroot)
 
 
-async def async_run_from_tftp(cfg, device, tftpdir, *, relay):
+async def async_run_from_tftp(cfg, device, tftpdir, *, relay, timeout):
     async with aiohttp.ClientSession() as session:
         if relay not in secret_tokens.root:
             await authenticate(cfg, session=session, relay=relay)
 
         token = secret_tokens.root[relay].token
-        run = Run(device=device, session=session, relay=relay, token=token)
+        run = Run(
+            device=device, session=session, relay=relay, token=token, timeout=timeout
+        )
         await run.run_from_tftp(tftpdir)
 
 
@@ -355,6 +371,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--relay", type=str, required=True)
     parser.add_argument("-d", "--device", type=str, required=True)
+    parser.add_argument("--timeout", type=int, default=60)
 
     run_mutgrp = parser.add_mutually_exclusive_group(required=True)
     run_mutgrp.add_argument("--repo", action="store_true")
@@ -381,7 +398,13 @@ def main():
 
     if args.repo:
         asyncio.run(
-            async_run_from_repos(cfg, args.device, preset=args.device, relay=relay_url)
+            async_run_from_repos(
+                cfg,
+                args.device,
+                preset=args.device,
+                relay=relay_url,
+                timeout=args.timeout,
+            )
         )
     elif args.sysroot:
         asyncio.run(
@@ -391,9 +414,16 @@ def main():
                 preset=args.device,
                 sysroot=args.sysroot,
                 relay=relay_url,
+                timeout=args.timeout,
             )
         )
     elif args.tftp:
         asyncio.run(
-            async_run_from_tftp(cfg, args.device, tftpdir=args.tftp, relay=relay_url)
+            async_run_from_tftp(
+                cfg,
+                args.device,
+                tftpdir=args.tftp,
+                relay=relay_url,
+                timeout=args.timeout,
+            )
         )
