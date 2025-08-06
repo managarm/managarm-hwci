@@ -64,6 +64,9 @@ class Engine:
     def get_run(self, run_id):
         return self._runs[run_id]
 
+    def get_all_runs(self):
+        return self._runs.values()
+
     async def run(self):
         while True:
             run = await self._q.get()
@@ -176,6 +179,9 @@ class Run:
             len(self._missing_set),
         )
 
+    def get_root_objects(self):
+        return self.tftp.values()
+
     def missing_objects(self):
         return list(self._missing_set)
 
@@ -197,6 +203,7 @@ class Run:
         )
 
     def submit(self):
+        self.engine.cas.bump(self._object_set)
         self.engine._q.put_nowait(self)
 
     def terminate(self):

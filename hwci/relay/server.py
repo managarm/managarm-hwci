@@ -166,6 +166,18 @@ async def auth_middleware(request, handler):
     return await handler(request)
 
 
+async def prune_periodically(engine):
+    while True:
+        try:
+            keep_hdigests = set()
+            for run in engine.get_all_runs():
+                keep_hdigests.update(run.get_root_objects())
+            engine.cas.prune(keep_hdigests)
+        except Exception:
+            logger.exception("Pruning failed")
+        await asyncio.sleep(12 * 60 * 60)
+
+
 async def async_main(*, confdir, address, port):
     auth = hwci.relay.auth.Auth(confdir=confdir)
     engine = hwci.relay.ci.engine_from_config_toml(confdir=confdir)
@@ -180,7 +192,9 @@ async def async_main(*, confdir, address, port):
     site = web.TCPSite(runner, address, port)
     await site.start()
 
-    await engine.run()
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(engine.run())
+        tg.create_task(prune_periodically(engine))
 
 
 def main():

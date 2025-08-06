@@ -5,6 +5,7 @@ import logging
 import mmap
 import os
 import re
+import time
 
 from hwci import sqlite_util
 import hwci.timer_util
@@ -28,19 +29,22 @@ class Store:
         # History:
         # v1: Used a WITHOUT ROWID table which lead to poor performance
         #     as it stored the (relatively large) blobs inside the B-tree.
+        # v2: Remove WITHOUT ROWID.
+        # v3: Add last_use column.
         with sqlite_util.transaction(self._db):
             (db_version,) = self._db.execute("PRAGMA user_version").fetchone()
-            if db_version < 2:
+            if db_version < 3:
                 self._db.execute("DROP TABLE IF EXISTS objects")
                 self._db.execute("""
                     CREATE TABLE objects (
                         hdigest TEXT PRIMARY KEY,
                         meta BLOB,
-                        data BLOB
+                        data BLOB,
+                        last_use INTEGER
                     )
                     STRICT
                 """)
-                self._db.execute("PRAGMA user_version = 2")
+                self._db.execute("PRAGMA user_version = 3")
 
     def write_object(self, hdigest, obj):
         singleton_list = [(hdigest, obj)]
@@ -49,6 +53,7 @@ class Store:
     def write_many_objects(self, iterable):
         hash_timer = hwci.timer_util.Timer()
         inserts = []
+        timestamp = int(time.time())
         for hdigest, obj in iterable:
             if not SHA256_RE.fullmatch(hdigest):
                 raise RuntimeError(f"Rejecting hexdigest: {hdigest}")
@@ -60,14 +65,15 @@ class Store:
                     f"SHA256 mismatch, expected {hdigest}, got {computed_hdigest}"
                 )
 
-            inserts.append((computed_hdigest, obj.meta, obj.data))
+            inserts.append((computed_hdigest, obj.meta, obj.data, timestamp))
 
         with (
             hwci.timer_util.Timer() as commit_timer,
             sqlite_util.transaction(self._db),
         ):
             self._db.executemany(
-                "INSERT OR IGNORE INTO objects (hdigest, meta, data) VALUES (?, ?, ?)",
+                "INSERT OR IGNORE INTO objects (hdigest, meta, data, last_use)"
+                " VALUES (?, ?, ?, ?)",
                 inserts,
             )
         logger.debug(
@@ -125,6 +131,62 @@ class Store:
                 q.extend(obj.iter_linked())
             else:
                 assert meta == b"b"
+
+    def bump(self, hdigests):
+        timestamp = int(time.time())
+        with sqlite_util.transaction(self._db):
+            self._db.executemany(
+                "UPDATE objects SET last_use = ? WHERE hdigest = ?",
+                [(timestamp, hdigest) for hdigest in hdigests],
+            )
+
+    def prune(self, keep_hdigests):
+        logger.info("Running object storage pruning")
+
+        with hwci.timer_util.Timer() as walk_timer:
+            # We can ignore missing_set here.
+            full_keep_set = set()
+            missing_set = set()
+            for hdigest in keep_hdigests:
+                self.walk_tree_hdigests_into(
+                    hdigest, hdigest_set=full_keep_set, missing_set=missing_set
+                )
+            logger.info(
+                "Keeping %d objects (walked trees in %.2f s)",
+                len(full_keep_set),
+                walk_timer.elapsed,
+            )
+
+        with (
+            hwci.timer_util.Timer() as tx_timer,
+            sqlite_util.transaction(self._db),
+        ):
+            (total_size,) = self._db.execute(
+                "SELECT SUM(LENGTH(data)) FROM objects"
+            ).fetchone()
+            if total_size is None:
+                total_size = 0
+            logger.info("Total size is %d", total_size)
+
+            size_threshold = 10 * 1024 * 1024 * 1024  # 10 GiB.
+
+            hdigests_to_delete = []
+            cursor = self._db.execute(
+                "SELECT hdigest, last_use, LENGTH(data) FROM objects ORDER BY last_use ASC"
+            )
+            cutoff = int(time.time()) - 7 * 24 * 60 * 60  # 7 days.
+            for hdigest, last_use, size in cursor:
+                if total_size < size_threshold and last_use >= cutoff:
+                    break
+                if hdigest not in full_keep_set:
+                    hdigests_to_delete.append((hdigest,))
+                    total_size -= size
+
+            logger.info("Deleting %d objects", len(hdigests_to_delete))
+            self._db.executemany(
+                "DELETE FROM objects WHERE hdigest = ?", hdigests_to_delete
+            )
+        logger.debug("Pruning transaction took %.2f s", tx_timer.elapsed)
 
     def extract(self, hdigest, path):
         with open(path, "wb") as f:
