@@ -44,8 +44,8 @@ class Engine:
     def get_device(self, name):
         return self._devices[name]
 
-    def new_run(self, run_id, device, *, tftp, timeout):
-        self._runs[run_id] = Run(self, device, tftp=tftp, timeout=timeout)
+    def new_run(self, run_id, device, *, tftp, image, timeout):
+        self._runs[run_id] = Run(self, device, tftp=tftp, image=image, timeout=timeout)
 
     def get_run(self, run_id):
         return self._runs[run_id]
@@ -81,6 +81,7 @@ class Run:
         "device",
         "run_id",
         "tftp",
+        "image",
         "timeout",
         "_object_set",
         "_missing_set",
@@ -92,11 +93,12 @@ class Run:
         "_terminate_event",
     )
 
-    def __init__(self, engine, device, *, tftp, timeout):
+    def __init__(self, engine, device, *, tftp, image, timeout):
         self.engine = engine
         self.device = device
         self.run_id = str(uuid.uuid4())
         self.tftp = tftp
+        self.image = image
         self.timeout = timeout
         self._object_set = set()
         self._missing_set = set()
@@ -107,8 +109,9 @@ class Run:
         self._transfer_timer = hwci.timer_util.Timer()
         self._terminate_event = asyncio.Event()
 
+        roots = list(self.get_root_objects())
         with hwci.timer_util.Timer() as walk_timer:
-            for hdigest in self.tftp.values():
+            for hdigest in roots:
                 self.engine.cas.walk_tree_hdigests_into(
                     hdigest,
                     hdigest_set=self._object_set,
@@ -116,14 +119,16 @@ class Run:
                 )
         logger.debug(
             "Walking %d trees took %.2f s (objects: %d, missing: %d)",
-            len(self.tftp),
+            len(roots),
             walk_timer.elapsed,
             len(self._object_set),
             len(self._missing_set),
         )
 
     def get_root_objects(self):
-        return self.tftp.values()
+        yield from self.tftp.values()
+        if self.image:
+            yield self.image
 
     def missing_objects(self):
         return list(self._missing_set)
@@ -264,6 +269,7 @@ class Run:
                 "run_id": self.run_id,
                 "device": self.device.name,
                 "tftp": self.tftp,
+                "image": self.image,
             },
         )
         response.raise_for_status()

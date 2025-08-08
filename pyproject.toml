@@ -19,6 +19,7 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = [
     "hwci",
+    "hwci.blockd",
     "hwci.cas",
     "hwci.relay",
     "hwci.target",

@@ -87,6 +87,7 @@ class Run:
         "_run_id",
         "_objects",
         "_tftp",
+        "_image",
     )
 
     def __init__(self, *, device, session, relay, token, timeout):
@@ -100,6 +101,7 @@ class Run:
         self._objects = {}
         # Maps TFTP relative paths to hdigests.
         self._tftp = {}
+        self._image = None
 
     async def run_from_repos(self, cfg, preset):
         preset = cfg.presets[preset]
@@ -133,11 +135,12 @@ class Run:
             await self._gen_tftp(preset.profile, sysroot=sysroot, rundir=rundir)
             await self._launch()
 
-    async def run_from_sysroot(self, cfg, preset, sysroot):
+    async def run_from_sysroot(self, cfg, preset, sysroot, image_path):
         preset = cfg.presets[preset]
 
         with tempfile.TemporaryDirectory(prefix="hwci-", dir=".") as rundir:
             await self._gen_tftp(preset.profile, sysroot=sysroot, rundir=rundir)
+            await self._dissect_image(image_path)
             await self._launch()
 
     async def run_from_tftp(self, tftpdir):
@@ -165,6 +168,16 @@ class Run:
                 self._tftp[relpath] = hdigest
         print(f"Dissected files in {dissect_timer.elapsed:.2f} s")
 
+    async def _dissect_image(self, image_path):
+        if image_path is None:
+            return
+        with hwci.timer_util.Timer() as dissect_timer:
+            with open(image_path, "rb") as f:
+                dissector = hwci.cas.Dissector(f)
+                hdigest = await dissector.dissect_into(object_dict=self._objects)
+                self._image = hdigest
+        print(f"Dissected image in {dissect_timer.elapsed:.2f} s")
+
     async def _launch(self):
         response = await self.session.post(
             urljoin(f"{self.relay}/", "runs"),
@@ -175,6 +188,7 @@ class Run:
                 "run_id": self._run_id,
                 "device": self.device,
                 "tftp": self._tftp,
+                "image": self._image,
                 "timeout": self.timeout,
             },
         )
@@ -328,7 +342,9 @@ async def async_run_from_repos(cfg, device, preset, *, relay, timeout):
         await run.run_from_repos(cfg, preset)
 
 
-async def async_run_from_sysroot(cfg, device, preset, sysroot, *, relay, timeout):
+async def async_run_from_sysroot(
+    cfg, device, preset, *, sysroot, image_path, relay, timeout
+):
     async with aiohttp.ClientSession() as session:
         if relay not in secret_tokens.root:
             await authenticate(cfg, session=session, relay=relay)
@@ -337,7 +353,7 @@ async def async_run_from_sysroot(cfg, device, preset, sysroot, *, relay, timeout
         run = Run(
             device=device, session=session, relay=relay, token=token, timeout=timeout
         )
-        await run.run_from_sysroot(cfg, preset, sysroot)
+        await run.run_from_sysroot(cfg, preset, sysroot, image_path)
 
 
 async def async_run_from_tftp(cfg, device, tftpdir, *, relay, timeout):
@@ -372,6 +388,7 @@ def main():
     parser.add_argument("--relay", type=str, required=True)
     parser.add_argument("-d", "--device", type=str, required=True)
     parser.add_argument("--timeout", type=int, default=60)
+    parser.add_argument("--image", type=str)
 
     run_mutgrp = parser.add_mutually_exclusive_group(required=True)
     run_mutgrp.add_argument("--repo", action="store_true")
@@ -413,6 +430,7 @@ def main():
                 args.device,
                 preset=args.device,
                 sysroot=args.sysroot,
+                image_path=args.image,
                 relay=relay_url,
                 timeout=args.timeout,
             )

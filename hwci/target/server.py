@@ -20,6 +20,7 @@ class NewRunData(pydantic.BaseModel):
     run_id: str
     device: str
     tftp: typing.Dict[str, str]
+    image: typing.Optional[str]
 
 
 @routes.post("/runs/{run_id}/files")
@@ -53,7 +54,7 @@ async def post_runs(request):
     data = NewRunData.model_validate(await request.json())
 
     device = engine.get_device(data.device)
-    engine.new_run(data.run_id, device, tftp=data.tftp)
+    engine.new_run(data.run_id, device, tftp=data.tftp, image=data.image)
 
     return web.Response(text="OK")
 

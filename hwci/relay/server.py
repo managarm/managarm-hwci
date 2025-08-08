@@ -24,6 +24,7 @@ class NewRunData(pydantic.BaseModel):
     device: str
     timeout: float = 5
     tftp: typing.Dict[str, str]
+    image: typing.Optional[str]
 
 
 @routes.get("/auth/nonce", name="get_auth_nonce")
@@ -75,7 +76,9 @@ async def post_runs(request):
     data = NewRunData.model_validate(await request.json())
 
     device = engine.get_device(data.device)
-    engine.new_run(data.run_id, device, tftp=data.tftp, timeout=data.timeout)
+    engine.new_run(
+        data.run_id, device, tftp=data.tftp, image=data.image, timeout=data.timeout
+    )
 
     return web.Response(text="OK")
 

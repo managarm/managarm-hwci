@@ -9,6 +9,7 @@ import tomllib
 import typing
 
 import hwci.timer_util
+import hwci.blockd.client
 import hwci.cas
 import hwci.target.aio
 import hwci.target.shelly
@@ -28,6 +29,7 @@ class DeviceConfig(pydantic.BaseModel):
     tftp: str
     uart: str
     switch: SwitchConfig
+    image: typing.Optional[str] = None
 
 
 class Config(pydantic.BaseModel):
@@ -58,8 +60,8 @@ class Engine:
     def get_device(self, name):
         return self._devices[name]
 
-    def new_run(self, run_id, device, *, tftp):
-        self._runs[run_id] = Run(self, device, tftp=tftp)
+    def new_run(self, run_id, device, *, tftp, image):
+        self._runs[run_id] = Run(self, device, tftp=tftp, image=image)
 
     def get_run(self, run_id):
         return self._runs[run_id]
@@ -74,6 +76,10 @@ class Engine:
                 await run._dispatch()
             except Exception as e:
                 logger.error("Unhandled exception while dispatching run", exc_info=e)
+            try:
+                await run._shutdown()
+            except Exception:
+                logger.exception("Exception in run shutdown")
 
 
 class Device:
@@ -145,27 +151,32 @@ class Run:
         "engine",
         "device",
         "tftp",
+        "image",
         "_object_set",
         "_missing_set",
+        "_blockd_client",
         "_cond",
         "_done",
         "_logs",
         "_terminate_event",
     )
 
-    def __init__(self, engine, device, *, tftp):
+    def __init__(self, engine, device, *, tftp, image):
         self.engine = engine
         self.device = device
         self.tftp = tftp
+        self.image = image
         self._object_set = set()
         self._missing_set = set()
+        self._blockd_client = None
         self._cond = asyncio.Condition()
         self._done = False
         self._logs = bytearray()
         self._terminate_event = asyncio.Event()
 
+        roots = list(self.get_root_objects())
         with hwci.timer_util.Timer() as walk_timer:
-            for hdigest in self.tftp.values():
+            for hdigest in roots:
                 self.engine.cas.walk_tree_hdigests_into(
                     hdigest,
                     hdigest_set=self._object_set,
@@ -173,14 +184,16 @@ class Run:
                 )
         logger.debug(
             "Walking %d trees took %.2f s (objects: %d, missing: %d)",
-            len(self.tftp),
+            len(roots),
             walk_timer.elapsed,
             len(self._object_set),
             len(self._missing_set),
         )
 
     def get_root_objects(self):
-        return self.tftp.values()
+        yield from self.tftp.values()
+        if self.image:
+            yield self.image
 
     def missing_objects(self):
         return list(self._missing_set)
@@ -262,6 +275,10 @@ class Run:
         if mock_devices:
             os.close(mock_fd)
 
+    async def _shutdown(self):
+        if self._blockd_client:
+            await self._blockd_client.close()
+
     # Sets up the TFTP directory for this run.
     async def _prepare(self):
         for path, hdigest in self.tftp.items():
@@ -271,6 +288,20 @@ class Run:
             self.engine.cas.extract(
                 hdigest,
                 os.path.join(self.device.cfg.tftp, path),
+            )
+
+        if self.image:
+            logger.info("Setting up image %s via blockd", self.device.cfg.image)
+            with hwci.timer_util.Timer() as image_timer:
+                with open(self.device.cfg.image, "r+b") as f:
+                    self.engine.cas.extract_to(self.image, f)
+                    f.truncate()
+            logger.debug("Wrote image in %.2f s", image_timer.elapsed)
+
+            self._blockd_client = hwci.blockd.client.Client()
+            await self._blockd_client.setup(
+                "nqn.2024-12.org.managarm:nvme:managarm-boot",
+                os.path.basename(self.device.cfg.image),
             )
 
     async def _supervise(self, uart_task):
