@@ -270,40 +270,44 @@ class Dissector:
     # Work size: number of chunks hashed by each parallel job.
     WS = 4096
 
-    __slots__ = ("f",)
+    __slots__ = ("window", "_view", "_refs")
 
     def __init__(self, f):
-        self.f = f
+        self.window = mmap.mmap(f.fileno(), 0, prot=mmap.PROT_READ, trackfd=False)
+        self._view = memoryview(self.window)
+        self._refs = []
+
+    def close(self):
+        self._view.release()
+        for obj in self._refs:
+            obj.data.release()
+        self.window.close()
 
     async def dissect_into(self, *, object_dict):
         out = []
-        with mmap.mmap(
-            self.f.fileno(), 0, prot=mmap.PROT_READ, trackfd=False
-        ) as window:
-            num_jobs = math.ceil(len(window) / (self.WS * self.CS))
-            if num_jobs > 1:
-                # Parallel implementation.
-                with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=os.process_cpu_count()
-                ) as executor:
-                    futures = []
-                    loop = asyncio.get_running_loop()
-                    # TODO: Instead of submitting all jobs at the same time,
-                    #       only submit a fixed number at a time.
-                    for offset in range(0, len(window), self.WS * self.CS):
-                        futures.append(
-                            loop.run_in_executor(
-                                executor, self._dissect_chunks, window, offset
-                            )
-                        )
-                    for fut in futures:
-                        out.extend(await fut)
-            else:
-                for offset in range(0, len(window), self.WS * self.CS):
-                    out.extend(self._dissect_chunks(window, offset))
+        num_jobs = math.ceil(len(self._view) / (self.WS * self.CS))
+        if num_jobs > 1:
+            # Parallel implementation.
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=os.process_cpu_count()
+            ) as executor:
+                futures = []
+                loop = asyncio.get_running_loop()
+                # TODO: Instead of submitting all jobs at the same time,
+                #       only submit a fixed number at a time.
+                for offset in range(0, len(self._view), self.WS * self.CS):
+                    futures.append(
+                        loop.run_in_executor(executor, self._dissect_chunks, offset)
+                    )
+                for fut in futures:
+                    out.extend(await fut)
+        else:
+            for offset in range(0, len(self._view), self.WS * self.CS):
+                out.extend(self._dissect_chunks(offset))
 
         for digest, obj in out:
             object_dict.setdefault(digest.hex(), obj)
+            self._refs.append(obj)
 
         root = Object.make_merkle(b"".join(digest for digest, obj in out))
         object_dict.setdefault(root.hdigest(), root)
@@ -312,12 +316,11 @@ class Dissector:
 
     # This function hashes WS chunks of the input starting at some offset.
     # We hash more than one chunk at a time to improve multi-threaded performance.
-    # window is bytes-like buffer (e.g., returned by mmap.mmap()).
-    def _dissect_chunks(self, window, offset):
-        n = len(window)
+    def _dissect_chunks(self, offset):
+        n = len(self._view)
         out = []
         for c in range(offset, min(offset + self.WS * self.CS, n), self.CS):
-            chunk = window[c : min(c + self.CS, n)]
+            chunk = self._view[c : min(c + self.CS, n)]
             obj = Object.make_blob(chunk)
             out.append((obj.digest(), obj))
         return out

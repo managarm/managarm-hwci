@@ -1,6 +1,7 @@
 import aiohttp
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import pydantic
@@ -85,6 +86,7 @@ class Run:
         "token",
         "timeout",
         "_run_id",
+        "_dissectors",
         "_objects",
         "_tftp",
         "_image",
@@ -97,6 +99,7 @@ class Run:
         self.token = token
         self.timeout = timeout
         self._run_id = str(uuid.uuid4())
+        self._dissectors = []
         # Maps hdigests to objects.
         self._objects = {}
         # Maps TFTP relative paths to hdigests.
@@ -132,30 +135,40 @@ class Run:
                 sysroot=sysroot,
             )
 
-            await self._gen_tftp(preset.profile, sysroot=sysroot, rundir=rundir)
+            tftpdir = os.path.join(rundir, "tftp")
+            await self._gen_tftp(preset.profile, sysroot=sysroot, tftpdir=tftpdir)
+            with self._cleanup_dissectors():
+                await self._dissect_tftp_dir(tftpdir)
+                await self._new_run()
+                await self._upload()
             await self._launch()
 
     async def run_from_sysroot(self, cfg, preset, sysroot, image_path):
         preset = cfg.presets[preset]
 
         with tempfile.TemporaryDirectory(prefix="hwci-", dir=".") as rundir:
-            await self._gen_tftp(preset.profile, sysroot=sysroot, rundir=rundir)
-            await self._dissect_image(image_path)
+            tftpdir = os.path.join(rundir, "tftp")
+            await self._gen_tftp(preset.profile, sysroot=sysroot, tftpdir=tftpdir)
+            with self._cleanup_dissectors():
+                await self._dissect_tftp_dir(tftpdir)
+                await self._dissect_image(image_path)
+                await self._new_run()
+                await self._upload()
             await self._launch()
 
     async def run_from_tftp(self, tftpdir):
-        await self._dissect_tftp_dir(tftpdir)
+        with self._cleanup_dissectors():
+            await self._dissect_tftp_dir(tftpdir)
+            await self._new_run()
+            await self._upload()
         await self._launch()
 
-    async def _gen_tftp(self, profile, *, sysroot, rundir):
-        tftpdir = os.path.join(rundir, "tftp")
-
+    async def _gen_tftp(self, profile, *, sysroot, tftpdir):
         await hwci.boot_artifacts.generate_tftp(
             out=tftpdir,
             profile=profile,
             sysroot=sysroot,
         )
-        await self._dissect_tftp_dir(tftpdir)
 
     async def _dissect_tftp_dir(self, tftpdir):
         with hwci.timer_util.Timer() as dissect_timer:
@@ -164,6 +177,7 @@ class Run:
                 path = os.path.join(tftpdir, relpath)
                 with open(path, "rb") as f:
                     dissector = hwci.cas.Dissector(f)
+                    self._dissectors.append(dissector)
                     hdigest = await dissector.dissect_into(object_dict=self._objects)
                 self._tftp[relpath] = hdigest
         print(f"Dissected files in {dissect_timer.elapsed:.2f} s")
@@ -174,11 +188,18 @@ class Run:
         with hwci.timer_util.Timer() as dissect_timer:
             with open(image_path, "rb") as f:
                 dissector = hwci.cas.Dissector(f)
+                self._dissectors.append(dissector)
                 hdigest = await dissector.dissect_into(object_dict=self._objects)
                 self._image = hdigest
         print(f"Dissected image in {dissect_timer.elapsed:.2f} s")
 
-    async def _launch(self):
+    @contextlib.contextmanager
+    def _cleanup_dissectors(self):
+        yield
+        for dissector in self._dissectors:
+            dissector.close()
+
+    async def _new_run(self):
         response = await self.session.post(
             urljoin(f"{self.relay}/", "runs"),
             headers={
@@ -194,6 +215,7 @@ class Run:
         )
         response.raise_for_status()
 
+    async def _upload(self):
         print("Files:")
         for relpath, hdigest in self._tftp.items():
             print(f"    tftp: {relpath} ({hdigest})")
@@ -226,6 +248,7 @@ class Run:
             f" {nbytes_human_readable(nbytes_per_s)}/s)"
         )
 
+    async def _launch(self):
         print("Launching run")
 
         response = await self.session.post(
