@@ -2,6 +2,7 @@ import asyncio
 import concurrent.futures
 import hashlib
 import logging
+import math
 import mmap
 import os
 import re
@@ -279,9 +280,12 @@ class Dissector:
         with mmap.mmap(
             self.f.fileno(), 0, prot=mmap.PROT_READ, trackfd=False
         ) as window:
-            if False:
-                # Parallel implementation. Disabled for now since it's only worthwhile for GiB-sized files.
-                with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            num_jobs = math.ceil(len(window) / (self.WS * self.CS))
+            if num_jobs > 1:
+                # Parallel implementation.
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=os.process_cpu_count()
+                ) as executor:
                     futures = []
                     loop = asyncio.get_running_loop()
                     # TODO: Instead of submitting all jobs at the same time,
