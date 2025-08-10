@@ -26,6 +26,13 @@ class Store:
             os.path.join(dirpath, f"{name}.sqlite")
         )
 
+        # Set per-connection pragmas.
+        self._db.execute("PRAGMA locking_mode = EXCLUSIVE")
+
+        # Set per-DB pragmas.
+        self._db.execute("PRAGMA journal_mode = WAL")
+        self._db.execute("PRAGMA synchronous = NORMAL")
+
         # Migrate the DB schema to the newest version.
         # History:
         # v1: Used a WITHOUT ROWID table which lead to poor performance
