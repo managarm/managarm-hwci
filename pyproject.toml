@@ -10,6 +10,7 @@ dependencies = [
     "aiohttp",
     "pydantic",
     "tqdm",
+    "zstandard",
 ]
 
 [build-system]

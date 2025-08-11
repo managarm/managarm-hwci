@@ -7,6 +7,7 @@ import mmap
 import os
 import re
 import time
+import zstandard
 
 from hwci import sqlite_util
 import hwci.timer_util
@@ -39,49 +40,68 @@ class Store:
         #     as it stored the (relatively large) blobs inside the B-tree.
         # v2: Remove WITHOUT ROWID.
         # v3: Add last_use column.
+        # v4: Add compression column.
         with sqlite_util.transaction(self._db):
             (db_version,) = self._db.execute("PRAGMA user_version").fetchone()
-            if db_version < 3:
+            if db_version < 4:
                 self._db.execute("DROP TABLE IF EXISTS objects")
                 self._db.execute("""
                     CREATE TABLE objects (
                         hdigest TEXT PRIMARY KEY,
                         meta BLOB,
                         data BLOB,
+                        compression BLOB,
                         last_use INTEGER
                     )
                     STRICT
                 """)
-                self._db.execute("PRAGMA user_version = 3")
+                self._db.execute("PRAGMA user_version = 4")
 
     def write_object(self, hdigest, obj):
         singleton_list = [(hdigest, obj)]
         self.write_many_objects(singleton_list)
 
     def write_many_objects(self, iterable):
+        self.write_many_object_buffers(
+            (hdigest, obj.to_object_buffer()) for hdigest, obj in iterable
+        )
+
+    def write_object_buffer(self, hdigest, objbuf):
+        singleton_list = [(hdigest, objbuf)]
+        self.write_many_object_buffers(singleton_list)
+
+    def write_many_object_buffers(self, iterable):
         hash_timer = hwci.timer_util.Timer()
         inserts = []
         timestamp = int(time.time())
-        for hdigest, obj in iterable:
+        for hdigest, objbuf in iterable:
             if not SHA256_RE.fullmatch(hdigest):
                 raise RuntimeError(f"Rejecting hexdigest: {hdigest}")
 
             with hash_timer:
-                computed_hdigest = obj.hdigest()
+                computed_hdigest = objbuf.to_object().hdigest()
             if computed_hdigest != hdigest:
                 raise RuntimeError(
                     f"SHA256 mismatch, expected {hdigest}, got {computed_hdigest}"
                 )
 
-            inserts.append((computed_hdigest, obj.meta, obj.data, timestamp))
+            inserts.append(
+                (
+                    computed_hdigest,
+                    objbuf.meta,
+                    objbuf.buffer,
+                    objbuf.compression,
+                    timestamp,
+                )
+            )
 
         with (
             hwci.timer_util.Timer() as commit_timer,
             sqlite_util.transaction(self._db),
         ):
             self._db.executemany(
-                "INSERT OR IGNORE INTO objects (hdigest, meta, data, last_use)"
-                " VALUES (?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO objects (hdigest, meta, data, compression, last_use)"
+                " VALUES (?, ?, ?, ?, ?)",
                 inserts,
             )
         logger.debug(
@@ -106,20 +126,26 @@ class Store:
             raise KeyError(f"Missing object: {hdigest}")
         return meta
 
-    def read_object_or_none(self, hdigest):
+    def read_object_buffer_or_none(self, hdigest):
         row = self._db.execute(
-            "SELECT meta, data FROM objects WHERE hdigest = ?", (hdigest,)
+            "SELECT meta, data, compression FROM objects WHERE hdigest = ?", (hdigest,)
         ).fetchone()
         if row is None:
             return None
-        (meta, data) = row
-        return Object(meta, data)
+        (meta, buffer, compression) = row
+        return ObjectBuffer(meta, buffer, compression=compression)
+
+    def read_object_buffer(self, hdigest):
+        objbuf = self.read_object_buffer_or_none(hdigest)
+        if objbuf is None:
+            raise KeyError(f"Missing object: {hdigest}")
+        return objbuf
+
+    def read_object_or_none(self, hdigest):
+        return self.read_object_buffer_or_none(hdigest).to_object()
 
     def read_object(self, hdigest):
-        obj = self.read_object_or_none(hdigest)
-        if obj is None:
-            raise KeyError(f"Missing object: {hdigest}")
-        return obj
+        return self.read_object_buffer(hdigest).to_object()
 
     def walk_tree_hdigests_into(self, hdigest, *, hdigest_set, missing_set=None):
         q = [hdigest]
@@ -231,6 +257,9 @@ class Object:
         self.meta = meta
         self.data = data
 
+    def to_object_buffer(self):
+        return ObjectBuffer(self.meta, self.data, compression=b"")
+
     def digest(self):
         algo = hashlib.sha256()
         algo.update(self.meta)
@@ -258,6 +287,50 @@ class Object:
             yield from self.merkle_link_hdigests()
         else:
             assert self.meta == b"b"
+
+
+# Represents a potentially compressed buffer that can be decompressed to an Object.
+class ObjectBuffer:
+    ALLOWED_COMPRESSION = {b"", b"z"}
+
+    __slots__ = ("meta", "buffer", "compression")
+
+    def __init__(self, meta, buffer, *, compression):
+        if b"\0" in meta:
+            raise ValueError(f"Meta value must not contain null bytes: {meta}")
+        if meta not in Object.ALLOWED_META:
+            raise ValueError(f"Meta value not allowed: {meta}")
+        if compression not in self.ALLOWED_COMPRESSION:
+            raise ValueError(f"Compression not supported: {compression}")
+        self.meta = meta
+        self.buffer = buffer
+        self.compression = compression
+
+    def to_object(self):
+        objbuf = self.to_decompressed()
+        return Object(self.meta, objbuf.buffer)
+
+    def to_compressed(self, *, compressor=None):
+        if self.compression == b"z":
+            return self
+        else:
+            assert not self.compression
+            if not compressor:
+                compressor = zstandard.ZstdCompressor()
+            return ObjectBuffer(
+                self.meta, compressor.compress(self.buffer), compression=b"z"
+            )
+
+    def to_decompressed(self, *, decompressor=None):
+        if self.compression == b"z":
+            if not decompressor:
+                decompressor = zstandard.ZstdDecompressor()
+            return ObjectBuffer(
+                self.meta, decompressor.decompress(self.buffer), compression=b""
+            )
+        else:
+            assert not self.compression
+            return self
 
 
 def serialize(obj):
