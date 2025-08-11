@@ -60,7 +60,7 @@ async def post_files(request):
             break
         hdigest = part.filename
         buf = bytes(await part.read())
-        writes.append((hdigest, hwci.cas.deserialize(buf)))
+        writes.append((hdigest, hwci.cas.deserialize(buf).to_object()))
         n += 1
     engine.cas.write_many_objects(writes)
     logger.info("Received %d objects", n)

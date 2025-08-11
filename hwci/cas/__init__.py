@@ -308,7 +308,8 @@ class ObjectBuffer:
 
     def to_object(self):
         objbuf = self.to_decompressed()
-        return Object(self.meta, objbuf.buffer)
+        assert objbuf.compression == b""
+        return Object(objbuf.meta, objbuf.buffer)
 
     def to_compressed(self, *, compressor=None):
         if self.compression == b"z":
@@ -333,15 +334,69 @@ class ObjectBuffer:
             return self
 
 
-def serialize(obj):
-    return b"\0".join([obj.meta, obj.data])
+class Serializer:
+    __slots__ = ("buf",)
+
+    def __init__(self):
+        self.buf = bytearray()
+
+    def serialize(self, objbuf):
+        total = (
+            4  # Total size.
+            + 16  # Digest. TODO: We currently do not save the digest.
+            + len(objbuf.meta)
+            + 1
+            + len(objbuf.compression)
+            + 1
+            + len(objbuf.buffer)
+        )
+        self.buf += total.to_bytes(4, "little")
+        self.buf += bytes(16)
+        self.buf += objbuf.meta
+        self.buf += b"\0"
+        self.buf += objbuf.compression
+        self.buf += b"\0"
+        self.buf += objbuf.buffer
+
+
+class Deserializer:
+    __slots__ = ("buf",)
+
+    def __init__(self, buf):
+        self.buf = buf
+
+    def deserialize(self):
+        p = 0
+        # Total.
+        total = int.from_bytes(self.buf[p : p + 4], "little")
+        assert total == len(self.buf)
+        p += 4
+        # Digest.
+        self.buf[p : p + 16]
+        p += 16
+        # Meta.
+        s = self.buf.index(b"\0", p)
+        meta = self.buf[p:s]
+        p = s + 1
+        # Compression.
+        s = self.buf.index(b"\0", p)
+        compression = self.buf[p:s]
+        p = s + 1
+        # Buffer.
+        buffer = self.buf[p:total]
+
+        return ObjectBuffer(meta, buffer, compression=compression)
+
+
+def serialize(objbuf):
+    ser = Serializer()
+    ser.serialize(objbuf)
+    return ser.buf
 
 
 def deserialize(buf):
-    (meta, null, data) = buf.partition(b"\0")
-    if not null:
-        raise ValueError("CAS object must contain meta data separator")
-    return Object(meta, data)
+    der = Deserializer(buf)
+    return der.deserialize()
 
 
 class Dissector:

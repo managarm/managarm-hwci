@@ -297,7 +297,9 @@ class Run:
     async def _upload_objects(self, objects, *, pbar):
         form_data = aiohttp.FormData()
         for hdigest, obj in objects.items():
-            form_data.add_field("file", hwci.cas.serialize(obj), filename=hdigest)
+            form_data.add_field(
+                "file", hwci.cas.serialize(obj.to_object_buffer()), filename=hdigest
+            )
         await self.session.post(
             urljoin(f"{self.relay}/", f"runs/{self._run_id}/files"),
             headers={

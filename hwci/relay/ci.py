@@ -288,7 +288,9 @@ class Run:
         with hwci.timer_util.Timer() as timer:
             form_data = aiohttp.FormData()
             for hdigest, obj in objects.items():
-                form_data.add_field("file", hwci.cas.serialize(obj), filename=hdigest)
+                form_data.add_field(
+                    "file", hwci.cas.serialize(obj.to_object_buffer()), filename=hdigest
+                )
             response = await self.engine._http_client.post(
                 f"http://{self.device.host}:10898/runs/{self.run_id}/files",
                 data=form_data,
