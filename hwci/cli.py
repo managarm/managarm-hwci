@@ -14,6 +14,7 @@ import typing
 import urllib.parse
 import uuid
 from urllib.parse import urljoin
+import zstandard
 
 import hwci.boot_artifacts
 import hwci.timer_util
@@ -90,6 +91,7 @@ class Run:
         "_objects",
         "_tftp",
         "_image",
+        "_upload_nbytes",
     )
 
     def __init__(self, *, device, session, relay, token, timeout):
@@ -105,6 +107,7 @@ class Run:
         # Maps TFTP relative paths to hdigests.
         self._tftp = {}
         self._image = None
+        self._upload_nbytes = 0
 
     async def run_from_repos(self, cfg, preset):
         preset = cfg.presets[preset]
@@ -220,7 +223,6 @@ class Run:
         for relpath, hdigest in self._tftp.items():
             print(f"    tftp: {relpath} ({hdigest})")
 
-        nbytes = 0
         with hwci.timer_util.Timer() as upload_timer:
             while True:
                 missing_on_relay = await self._get_missing_on_relay()
@@ -239,12 +241,11 @@ class Run:
                                 self._upload_objects(objects, pbar=pbar)
                             )
                             task.add_done_callback(lambda task: semaphore.release())
-                            nbytes += sum(len(obj.data) for obj in objects.values())
 
-        nbytes_per_s = nbytes / upload_timer.elapsed
+        nbytes_per_s = self._upload_nbytes / upload_timer.elapsed
         print(
             f"Uploaded files in {upload_timer.elapsed:.2f} s"
-            f" ({nbytes_human_readable(nbytes)} in total,"
+            f" ({nbytes_human_readable(self._upload_nbytes)} in total,"
             f" {nbytes_human_readable(nbytes_per_s)}/s)"
         )
 
@@ -295,11 +296,12 @@ class Run:
         return await response.json()
 
     async def _upload_objects(self, objects, *, pbar):
+        compressor = zstandard.ZstdCompressor(level=-1)
         form_data = aiohttp.FormData()
         for hdigest, obj in objects.items():
-            form_data.add_field(
-                "file", hwci.cas.serialize(obj.to_object_buffer()), filename=hdigest
-            )
+            objbuf = obj.to_object_buffer().to_compressed(compressor=compressor)
+            form_data.add_field("file", hwci.cas.serialize(objbuf), filename=hdigest)
+            self._upload_nbytes += len(objbuf.buffer)
         await self.session.post(
             urljoin(f"{self.relay}/", f"runs/{self._run_id}/files"),
             headers={
