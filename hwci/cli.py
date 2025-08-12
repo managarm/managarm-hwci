@@ -314,26 +314,29 @@ class Run:
         return await response.json()
 
     async def _upload_objects(self, objects, *, pbar):
-        compressor = zstandard.ZstdCompressor(level=-1)
-        serializer = hwci.cas.Serializer()
-        nbytes = 0
-        for hdigest, obj in objects.items():
-            objbuf = obj.to_object_buffer().to_compressed(compressor=compressor)
-            digest = bytes.fromhex(hdigest)
-            serializer.serialize(digest, objbuf)
-            nbytes += len(obj.data)
+        def compress_and_serialize_objects(objects):
+            compressor = zstandard.ZstdCompressor(level=-1)
+            serializer = hwci.cas.Serializer()
+            for hdigest, obj in objects.items():
+                objbuf = obj.to_object_buffer().to_compressed(compressor=compressor)
+                digest = bytes.fromhex(hdigest)
+                serializer.serialize(digest, objbuf)
+            return serializer.buf
+
+        nbytes = sum(len(obj.data) for obj in objects.values())
+        buf = await asyncio.to_thread(compress_and_serialize_objects, objects)
         await self.session.post(
             urljoin(f"{self.relay}/", f"runs/{self._run_id}/files"),
             headers={
                 "Authorization": f"Bearer {self.token}",
             },
             data=upload_with_progress(
-                serializer.buf,
-                lambda n: pbar.update(math.floor(n / len(serializer.buf) * nbytes)),
+                buf,
+                lambda n: pbar.update(math.floor(n / len(buf) * nbytes)),
             ),
             raise_for_status=True,
         )
-        self._upload_nbytes += len(serializer.buf)
+        self._upload_nbytes += len(buf)
 
 
 async def authenticate(cfg, *, session, relay):
