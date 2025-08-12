@@ -299,7 +299,7 @@ class Run:
             obj = self._objects[hdigest]
             chunk[hdigest] = obj
             n += len(obj.data)
-            if n > 2 * 1024 * 1024:
+            if n > 64 * 1024 * 1024:
                 break
         return chunk
 

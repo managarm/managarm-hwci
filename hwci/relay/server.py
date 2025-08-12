@@ -27,6 +27,11 @@ class NewRunData(pydantic.BaseModel):
     image: typing.Optional[str]
 
 
+def validate_all_objbufs(iterable):
+    for hdigest, objbuf in iterable:
+        objbuf.validate(hdigest)
+
+
 @routes.get("/auth/nonce", name="get_auth_nonce")
 async def get_auth_nonce(request):
     auth = AUTH.get()
@@ -64,9 +69,13 @@ async def post_files(request):
         hdigest = digest.hex()
         writes.append((hdigest, objbuf))
         hdigests.append(hdigest)
+    logger.info("Received %d objects", len(writes))
+
+    with hwci.timer_util.Timer() as validate_timer:
+        await asyncio.to_thread(validate_all_objbufs, writes)
+    logger.info("Validated objects in %.2f s", validate_timer.elapsed)
 
     engine.cas.write_many_object_buffers(writes)
-    logger.info("Received %d objects", len(writes))
 
     run.notify_objects(hdigests)
 

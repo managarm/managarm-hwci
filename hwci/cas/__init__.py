@@ -71,23 +71,12 @@ class Store:
         self.write_many_object_buffers(singleton_list)
 
     def write_many_object_buffers(self, iterable):
-        hash_timer = hwci.timer_util.Timer()
         inserts = []
         timestamp = int(time.time())
         for hdigest, objbuf in iterable:
-            if not SHA256_RE.fullmatch(hdigest):
-                raise RuntimeError(f"Rejecting hexdigest: {hdigest}")
-
-            with hash_timer:
-                computed_hdigest = objbuf.to_object().hdigest()
-            if computed_hdigest != hdigest:
-                raise RuntimeError(
-                    f"SHA256 mismatch, expected {hdigest}, got {computed_hdigest}"
-                )
-
             inserts.append(
                 (
-                    computed_hdigest,
+                    hdigest,
                     objbuf.meta,
                     objbuf.buffer,
                     objbuf.compression,
@@ -105,9 +94,8 @@ class Store:
                 inserts,
             )
         logger.debug(
-            "Wrote %d objects (committed in %.2f s, hashing took %.2f s)",
+            "Wrote %d objects, transaction took %.2f s",
             len(inserts),
-            hash_timer.elapsed,
             commit_timer.elapsed,
         )
 
@@ -332,6 +320,16 @@ class ObjectBuffer:
         else:
             assert not self.compression
             return self
+
+    def validate(self, hdigest):
+        if not SHA256_RE.fullmatch(hdigest):
+            raise RuntimeError(f"Rejecting hexdigest: {hdigest}")
+
+        computed_hdigest = self.to_object().hdigest()
+        if computed_hdigest != hdigest:
+            raise RuntimeError(
+                f"SHA256 mismatch, expected {hdigest}, got {computed_hdigest}"
+            )
 
 
 class Serializer:

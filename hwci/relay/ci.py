@@ -255,7 +255,7 @@ class Run:
             obj = self.engine.cas.read_object(hdigest)
             chunk[hdigest] = obj
             n += len(obj.data)
-            if n > 2 * 1024 * 1024:
+            if n > 128 * 1024 * 1024:
                 break
         return chunk
 
