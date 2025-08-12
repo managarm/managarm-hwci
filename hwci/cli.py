@@ -3,6 +3,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import math
 import os
 import pydantic
 import shutil
@@ -77,6 +78,15 @@ def nbytes_human_readable(n):
     if n >= kib:
         return f"{n / kib:.2f} KiB"
     return f"{n} B"
+
+
+async def upload_with_progress(buf, fn):
+    with memoryview(buf) as view:
+        cs = 1024 * 1024
+        for p in range(0, len(view), cs):
+            with view[p : min(len(view), p + cs)] as subview:
+                yield subview
+                fn(len(subview))
 
 
 class Run:
@@ -228,10 +238,18 @@ class Run:
                 missing_on_relay = await self._get_missing_on_relay()
                 if not missing_on_relay:
                     break
-                print(f"Relay is missing {len(missing_on_relay)} objects")
+                total = sum(
+                    len(self._objects[hdigest].data) for hdigest in missing_on_relay
+                )
+                print(
+                    f"Relay is missing {len(missing_on_relay)} objects"
+                    f" ({nbytes_human_readable(total)} uncompressed)"
+                )
 
                 queue = missing_on_relay
-                with tqdm.tqdm(total=len(missing_on_relay), unit="objs") as pbar:
+                with tqdm.tqdm(
+                    total=float(total), unit="objB", unit_scale=True
+                ) as pbar:
                     semaphore = asyncio.Semaphore(4)
                     async with asyncio.TaskGroup() as tg:
                         while queue:
@@ -245,7 +263,7 @@ class Run:
         nbytes_per_s = self._upload_nbytes / upload_timer.elapsed
         print(
             f"Uploaded files in {upload_timer.elapsed:.2f} s"
-            f" ({nbytes_human_readable(self._upload_nbytes)} in total,"
+            f" (tranferred {nbytes_human_readable(self._upload_nbytes)} in total,"
             f" {nbytes_human_readable(nbytes_per_s)}/s)"
         )
 
@@ -298,20 +316,24 @@ class Run:
     async def _upload_objects(self, objects, *, pbar):
         compressor = zstandard.ZstdCompressor(level=-1)
         serializer = hwci.cas.Serializer()
+        nbytes = 0
         for hdigest, obj in objects.items():
             objbuf = obj.to_object_buffer().to_compressed(compressor=compressor)
             digest = bytes.fromhex(hdigest)
             serializer.serialize(digest, objbuf)
-            self._upload_nbytes += len(objbuf.buffer)
+            nbytes += len(obj.data)
         await self.session.post(
             urljoin(f"{self.relay}/", f"runs/{self._run_id}/files"),
             headers={
                 "Authorization": f"Bearer {self.token}",
             },
-            data=serializer.buf,
+            data=upload_with_progress(
+                serializer.buf,
+                lambda n: pbar.update(math.floor(n / len(serializer.buf) * nbytes)),
+            ),
             raise_for_status=True,
         )
-        pbar.update(len(objects))
+        self._upload_nbytes += len(serializer.buf)
 
 
 async def authenticate(cfg, *, session, relay):
