@@ -286,14 +286,13 @@ class Run:
             return
 
         with hwci.timer_util.Timer() as timer:
-            form_data = aiohttp.FormData()
+            serializer = hwci.cas.Serializer()
             for hdigest, obj in objects.items():
-                form_data.add_field(
-                    "file", hwci.cas.serialize(obj.to_object_buffer()), filename=hdigest
-                )
+                digest = bytes.fromhex(hdigest)
+                serializer.serialize(digest, obj.to_object_buffer())
             response = await self.engine._http_client.post(
                 f"http://{self.device.host}:10898/runs/{self.run_id}/files",
-                data=form_data,
+                data=serializer.buf,
             )
             response.raise_for_status()
         self._transfer_timer.elapsed += timer.elapsed

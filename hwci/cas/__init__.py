@@ -340,63 +340,76 @@ class Serializer:
     def __init__(self):
         self.buf = bytearray()
 
-    def serialize(self, objbuf):
+    def serialize(self, digest, objbuf):
+        assert len(digest) == DIGEST_SIZE
+
         total = (
             4  # Total size.
-            + 16  # Digest. TODO: We currently do not save the digest.
+            + DIGEST_SIZE
             + len(objbuf.meta)
             + 1
             + len(objbuf.compression)
             + 1
             + len(objbuf.buffer)
         )
+        p = len(self.buf)
         self.buf += total.to_bytes(4, "little")
-        self.buf += bytes(16)
+        self.buf += digest
         self.buf += objbuf.meta
         self.buf += b"\0"
         self.buf += objbuf.compression
         self.buf += b"\0"
         self.buf += objbuf.buffer
+        assert len(self.buf) == p + total
 
 
 class Deserializer:
-    __slots__ = ("buf",)
+    __slots__ = ("buf", "pos")
 
     def __init__(self, buf):
         self.buf = buf
+        self.pos = 0
 
     def deserialize(self):
-        p = 0
+        p = self.pos
+        if p == len(self.buf):
+            return None
+        assert p < len(self.buf)
+
         # Total.
         total = int.from_bytes(self.buf[p : p + 4], "little")
-        assert total == len(self.buf)
+        limit = self.pos + total
         p += 4
         # Digest.
-        self.buf[p : p + 16]
-        p += 16
+        digest = self.buf[p : p + DIGEST_SIZE]
+        p += DIGEST_SIZE
         # Meta.
-        s = self.buf.index(b"\0", p)
+        s = self.buf.index(b"\0", p, limit)
         meta = self.buf[p:s]
         p = s + 1
         # Compression.
-        s = self.buf.index(b"\0", p)
+        s = self.buf.index(b"\0", p, limit)
         compression = self.buf[p:s]
         p = s + 1
         # Buffer.
-        buffer = self.buf[p:total]
+        buffer = self.buf[p:limit]
 
-        return ObjectBuffer(meta, buffer, compression=compression)
+        self.pos += total
+        return (digest, ObjectBuffer(meta, buffer, compression=compression))
 
 
-def serialize(objbuf):
+def serialize(digest, objbuf):
     ser = Serializer()
-    ser.serialize(objbuf)
+    ser.serialize(digest, objbuf)
     return ser.buf
 
 
 def deserialize(buf):
     der = Deserializer(buf)
-    return der.deserialize()
+    item = der.deserialize()
+    if der.pos != len(der.buf):
+        raise ValueError("Buffer contains more than one object")
+    return item
 
 
 class Dissector:

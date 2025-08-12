@@ -48,24 +48,27 @@ async def post_auth_sshkey(request):
 @routes.post("/runs/{run_id}/files")
 async def post_files(request):
     run_id = request.match_info["run_id"]
-    multipart = await request.multipart()
+    buf = await request.content.read()
 
     engine = ENGINE.get()
     run = engine.get_run(run_id)
-    n = 0
-    writes = []
-    while True:
-        part = await multipart.next()
-        if part is None:
-            break
-        hdigest = part.filename
-        buf = bytes(await part.read())
-        writes.append((hdigest, hwci.cas.deserialize(buf)))
-        n += 1
-    engine.cas.write_many_object_buffers(writes)
-    logger.info("Received %d objects", n)
 
-    run.notify_objects([hdigest for hdigest, obj in writes])
+    deserializer = hwci.cas.Deserializer(buf)
+    writes = []
+    hdigests = []
+    while True:
+        item = deserializer.deserialize()
+        if item is None:
+            break
+        digest, objbuf = item
+        hdigest = digest.hex()
+        writes.append((hdigest, objbuf))
+        hdigests.append(hdigest)
+
+    engine.cas.write_many_object_buffers(writes)
+    logger.info("Received %d objects", len(writes))
+
+    run.notify_objects(hdigests)
 
     return web.Response(text="OK")
 

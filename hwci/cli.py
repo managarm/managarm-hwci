@@ -297,17 +297,18 @@ class Run:
 
     async def _upload_objects(self, objects, *, pbar):
         compressor = zstandard.ZstdCompressor(level=-1)
-        form_data = aiohttp.FormData()
+        serializer = hwci.cas.Serializer()
         for hdigest, obj in objects.items():
             objbuf = obj.to_object_buffer().to_compressed(compressor=compressor)
-            form_data.add_field("file", hwci.cas.serialize(objbuf), filename=hdigest)
+            digest = bytes.fromhex(hdigest)
+            serializer.serialize(digest, objbuf)
             self._upload_nbytes += len(objbuf.buffer)
         await self.session.post(
             urljoin(f"{self.relay}/", f"runs/{self._run_id}/files"),
             headers={
                 "Authorization": f"Bearer {self.token}",
             },
-            data=form_data,
+            data=serializer.buf,
             raise_for_status=True,
         )
         pbar.update(len(objects))
