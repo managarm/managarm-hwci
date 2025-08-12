@@ -205,10 +205,10 @@ class Run:
                     while queue:
                         await semaphore.acquire()
                         with self._retrieve_timer:
-                            objects = self._group_objects_for_upload(queue)
-                        task = tg.create_task(self._upload(objects))
+                            objbufs = self._group_objects_for_upload(queue)
+                        task = tg.create_task(self._upload(objbufs))
                         task.add_done_callback(lambda task: semaphore.release())
-                        nbytes += sum(len(obj.data) for obj in objects.values())
+                        nbytes += sum(len(objbuf.buffer) for objbuf in objbufs.values())
 
         logger.debug(
             "Uploaded objects in %.2f s (retrieval: %.2f s, transfer: %.2f s, %.2f KiB)",
@@ -252,9 +252,9 @@ class Run:
         n = 0
         while queue:
             hdigest = queue.pop()
-            obj = self.engine.cas.read_object(hdigest)
-            chunk[hdigest] = obj
-            n += len(obj.data)
+            objbuf = self.engine.cas.read_object_buffer(hdigest)
+            chunk[hdigest] = objbuf
+            n += len(objbuf.buffer)
             if n > 128 * 1024 * 1024:
                 break
         return chunk
@@ -281,15 +281,15 @@ class Run:
         )
         return await response.json()
 
-    async def _upload(self, objects):
+    async def _upload(self, objbufs):
         if mock_targets:
             return
 
         with hwci.timer_util.Timer() as timer:
             serializer = hwci.cas.Serializer()
-            for hdigest, obj in objects.items():
+            for hdigest, objbuf in objbufs.items():
                 digest = bytes.fromhex(hdigest)
-                serializer.serialize(digest, obj.to_object_buffer())
+                serializer.serialize(digest, objbuf)
             response = await self.engine._http_client.post(
                 f"http://{self.device.host}:10898/runs/{self.run_id}/files",
                 data=serializer.buf,
