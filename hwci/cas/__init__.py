@@ -19,6 +19,12 @@ SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 DIGEST_SIZE = hashlib.sha256().digest_size
 
 
+def parse_hdigest(hdigest):
+    if not SHA256_RE.fullmatch(hdigest):
+        raise ValueError(f"Rejecting hexdigest: {hdigest}")
+    return bytes.fromhex(hdigest)
+
+
 class Store:
     __slots__ = ("path", "_db")
 
@@ -43,11 +49,12 @@ class Store:
         # v4: Add compression column.
         with sqlite_util.transaction(self._db):
             (db_version,) = self._db.execute("PRAGMA user_version").fetchone()
-            if db_version < 4:
+            if db_version < 5:
                 self._db.execute("DROP TABLE IF EXISTS objects")
                 self._db.execute("""
                     CREATE TABLE objects (
-                        hdigest TEXT PRIMARY KEY,
+                        id INTEGER PRIMARY KEY,
+                        digest BLOB UNIQUE,
                         meta BLOB,
                         data BLOB,
                         compression BLOB,
@@ -55,7 +62,7 @@ class Store:
                     )
                     STRICT
                 """)
-                self._db.execute("PRAGMA user_version = 4")
+                self._db.execute("PRAGMA user_version = 5")
 
     def write_object(self, hdigest, obj):
         singleton_list = [(hdigest, obj)]
@@ -76,7 +83,7 @@ class Store:
         for hdigest, objbuf in iterable:
             inserts.append(
                 (
-                    hdigest,
+                    parse_hdigest(hdigest),
                     objbuf.meta,
                     objbuf.buffer,
                     objbuf.compression,
@@ -89,7 +96,7 @@ class Store:
             sqlite_util.transaction(self._db),
         ):
             self._db.executemany(
-                "INSERT OR IGNORE INTO objects (hdigest, meta, data, compression, last_use)"
+                "INSERT OR IGNORE INTO objects (digest, meta, data, compression, last_use)"
                 " VALUES (?, ?, ?, ?, ?)",
                 inserts,
             )
@@ -101,7 +108,7 @@ class Store:
 
     def read_meta_or_none(self, hdigest):
         row = self._db.execute(
-            "SELECT meta FROM objects WHERE hdigest = ?", (hdigest,)
+            "SELECT meta FROM objects WHERE digest = ?", (parse_hdigest(hdigest),)
         ).fetchone()
         if row is None:
             return None
@@ -116,7 +123,8 @@ class Store:
 
     def read_object_buffer_or_none(self, hdigest):
         row = self._db.execute(
-            "SELECT meta, data, compression FROM objects WHERE hdigest = ?", (hdigest,)
+            "SELECT meta, data, compression FROM objects WHERE digest = ?",
+            (parse_hdigest(hdigest),),
         ).fetchone()
         if row is None:
             return None
@@ -158,8 +166,8 @@ class Store:
         timestamp = int(time.time())
         with sqlite_util.transaction(self._db):
             self._db.executemany(
-                "UPDATE objects SET last_use = ? WHERE hdigest = ?",
-                [(timestamp, hdigest) for hdigest in hdigests],
+                "UPDATE objects SET last_use = ? WHERE digest = ?",
+                [(timestamp, parse_hdigest(hdigest)) for hdigest in hdigests],
             )
 
     def prune(self, keep_hdigests):
@@ -192,21 +200,21 @@ class Store:
 
             size_threshold = 10 * 1024 * 1024 * 1024  # 10 GiB.
 
-            hdigests_to_delete = []
+            digests_to_delete = []
             cursor = self._db.execute(
-                "SELECT hdigest, last_use, LENGTH(data) FROM objects ORDER BY last_use ASC"
+                "SELECT digest, last_use, LENGTH(data) FROM objects ORDER BY last_use ASC"
             )
             cutoff = int(time.time()) - 7 * 24 * 60 * 60  # 7 days.
-            for hdigest, last_use, size in cursor:
+            for digest, last_use, size in cursor:
                 if total_size < size_threshold and last_use >= cutoff:
                     break
-                if hdigest not in full_keep_set:
-                    hdigests_to_delete.append((hdigest,))
+                if digest.hex() not in full_keep_set:
+                    digests_to_delete.append((digest,))
                     total_size -= size
 
-            logger.info("Deleting %d objects", len(hdigests_to_delete))
+            logger.info("Deleting %d objects", len(digests_to_delete))
             self._db.executemany(
-                "DELETE FROM objects WHERE hdigest = ?", hdigests_to_delete
+                "DELETE FROM objects WHERE digest = ?", digests_to_delete
             )
         logger.debug("Pruning transaction took %.2f s", tx_timer.elapsed)
 
