@@ -26,43 +26,94 @@ def parse_hdigest(hdigest):
 
 
 class Store:
-    __slots__ = ("path", "_db")
+    __slots__ = ("dirpath", "name", "_db")
 
     def __init__(self, name, *, dirpath="."):
+        self.dirpath = dirpath
+        self.name = name
+
+        self._init_db()
+        self._attach_data_db()
+        self._init_db_views()
+
+    def _init_db(self):
         self._db = sqlite_util.connect_autocommit(
-            os.path.join(dirpath, f"{name}.sqlite")
+            os.path.join(self.dirpath, f"{self.name}.sqlite")
         )
 
         # Set per-connection pragmas.
-        self._db.execute("PRAGMA locking_mode = EXCLUSIVE")
+        self._db.execute("PRAGMA main.locking_mode = EXCLUSIVE")
+        self._db.execute("PRAGMA main.mmap_size = 0x80000000")
 
         # Set per-DB pragmas.
-        self._db.execute("PRAGMA journal_mode = WAL")
-        self._db.execute("PRAGMA synchronous = NORMAL")
+        self._db.execute("PRAGMA main.journal_mode = WAL")
+        self._db.execute("PRAGMA main.synchronous = NORMAL")
 
         # Migrate the DB schema to the newest version.
+        # Brackets indicate the affected tables.
         # History:
-        # v1: Used a WITHOUT ROWID table which lead to poor performance
+        # v1 [objects]: Used a WITHOUT ROWID table which lead to poor performance
         #     as it stored the (relatively large) blobs inside the B-tree.
-        # v2: Remove WITHOUT ROWID.
-        # v3: Add last_use column.
-        # v4: Add compression column.
+        # v2 [objects]: Remove WITHOUT ROWID.
+        # v3 [objects]: Add last_use column.
+        # v4 [objects]: Add compression column.
+        # v5 [objects]: Replace hex digests by binary digests.
+        # v6 [objects]: Split data into attached database.
         with sqlite_util.transaction(self._db):
-            (db_version,) = self._db.execute("PRAGMA user_version").fetchone()
-            if db_version < 5:
-                self._db.execute("DROP TABLE IF EXISTS objects")
+            (db_version,) = self._db.execute("PRAGMA main.user_version").fetchone()
+            if db_version < 6:
+                self._db.execute("DROP TABLE IF EXISTS main.objects")
                 self._db.execute("""
-                    CREATE TABLE objects (
-                        id INTEGER PRIMARY KEY,
+                    CREATE TABLE main.objects (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
                         digest BLOB UNIQUE,
                         meta BLOB,
-                        data BLOB,
-                        compression BLOB,
                         last_use INTEGER
                     )
                     STRICT
                 """)
-                self._db.execute("PRAGMA user_version = 5")
+                self._db.execute("PRAGMA main.user_version = 6")
+
+    def _attach_data_db(self):
+        self._db.execute(
+            "ATTACH DATABASE ? AS data",
+            (os.path.join(self.dirpath, f"{self.name}.data-sqlite"),),
+        )
+
+        # Set per-connection pragmas.
+        self._db.execute("PRAGMA data.locking_mode = EXCLUSIVE")
+
+        # Set per-DB pragmas.
+        self._db.execute("PRAGMA data.journal_mode = WAL")
+        self._db.execute("PRAGMA data.synchronous = NORMAL")
+
+        # Migrate the DB schema to the newest version.
+        # Brackets indicate the affected tables.
+        # History:
+        # v1 [buffers]: Split data into attached database.
+        with sqlite_util.transaction(self._db):
+            (db_version,) = self._db.execute("PRAGMA data.user_version").fetchone()
+            if db_version < 1:
+                # We split the buffers into a separate file to keep the main DB file small.
+                # This ensures that the entire main DB can be mmap()ed at the same time.
+                self._db.execute("""
+                    CREATE TABLE data.buffers (
+                        id INTEGER PRIMARY KEY,
+                        compression BLOB,
+                        buffer BLOB
+                    )
+                    STRICT
+                """)
+                self._db.execute("PRAGMA data.user_version = 1")
+
+    def _init_db_views(self):
+        # We create our views in the temporary in-memory DB.
+        # Storing them to disk does not offer any advantages anyway.
+        self._db.execute("""
+            CREATE TEMP VIEW objects_with_buffers
+            AS SELECT id, digest, meta, last_use, compression, buffer FROM objects
+            NATURAL INNER JOIN buffers
+        """)
 
     def write_object(self, hdigest, obj):
         singleton_list = [(hdigest, obj)]
@@ -78,27 +129,39 @@ class Store:
         self.write_many_object_buffers(singleton_list)
 
     def write_many_object_buffers(self, iterable):
-        inserts = []
         timestamp = int(time.time())
-        for hdigest, objbuf in iterable:
-            inserts.append(
-                (
-                    parse_hdigest(hdigest),
-                    objbuf.meta,
-                    objbuf.buffer,
-                    objbuf.compression,
-                    timestamp,
-                )
-            )
 
+        inserts = []
         with (
             hwci.timer_util.Timer() as commit_timer,
             sqlite_util.transaction(self._db),
         ):
+            for hdigest, objbuf in iterable:
+                digest = parse_hdigest(hdigest)
+                # We expect the object to be absent in most cases.
+                # ence it is better to do INSERT, then SELECT (if insertion fails).
+                row = self._db.execute(
+                    "INSERT INTO objects (digest, meta, last_use)"
+                    " VALUES (?, ?, ?)"
+                    " ON CONFLICT DO NOTHING"
+                    " RETURNING id",
+                    (digest, objbuf.meta, timestamp),
+                ).fetchone()
+                if row is None:
+                    row = self._db.execute(
+                        "SELECT id FROM objects WHERE digest = ?", (digest,)
+                    ).fetchone()
+                    assert row is not None
+                (obj_id,) = row
+                inserts.append((obj_id, objbuf))
+
             self._db.executemany(
-                "INSERT OR IGNORE INTO objects (digest, meta, data, compression, last_use)"
-                " VALUES (?, ?, ?, ?, ?)",
-                inserts,
+                "INSERT INTO buffers (id, compression, buffer) VALUES (?, ?, ?)"
+                " ON CONFLICT DO NOTHING",
+                (
+                    (obj_id, objbuf.compression, objbuf.buffer)
+                    for obj_id, objuf in inserts
+                ),
             )
         logger.debug(
             "Wrote %d objects, transaction took %.2f s",
@@ -123,12 +186,12 @@ class Store:
 
     def read_object_buffer_or_none(self, hdigest):
         row = self._db.execute(
-            "SELECT meta, data, compression FROM objects WHERE digest = ?",
+            "SELECT meta, compression, buffer FROM objects_with_buffers WHERE digest = ?",
             (parse_hdigest(hdigest),),
         ).fetchone()
         if row is None:
             return None
-        (meta, buffer, compression) = row
+        (meta, compression, buffer) = row
         return ObjectBuffer(meta, buffer, compression=compression)
 
     def read_object_buffer(self, hdigest):
@@ -192,7 +255,7 @@ class Store:
             sqlite_util.transaction(self._db),
         ):
             (total_size,) = self._db.execute(
-                "SELECT SUM(LENGTH(data)) FROM objects"
+                "SELECT SUM(LENGTH(buffer)) FROM buffers"
             ).fetchone()
             if total_size is None:
                 total_size = 0
@@ -200,22 +263,21 @@ class Store:
 
             size_threshold = 10 * 1024 * 1024 * 1024  # 10 GiB.
 
-            digests_to_delete = []
+            obj_ids_to_delete = []
             cursor = self._db.execute(
-                "SELECT digest, last_use, LENGTH(data) FROM objects ORDER BY last_use ASC"
+                "SELECT id, digest, last_use, LENGTH(buffer) FROM objects_with_buffers ORDER BY last_use ASC"
             )
             cutoff = int(time.time()) - 7 * 24 * 60 * 60  # 7 days.
-            for digest, last_use, size in cursor:
+            for obj_id, digest, last_use, size in cursor:
                 if total_size < size_threshold and last_use >= cutoff:
                     break
                 if digest.hex() not in full_keep_set:
-                    digests_to_delete.append((digest,))
+                    obj_ids_to_delete.append((obj_id,))
                     total_size -= size
 
-            logger.info("Deleting %d objects", len(digests_to_delete))
-            self._db.executemany(
-                "DELETE FROM objects WHERE digest = ?", digests_to_delete
-            )
+            logger.info("Deleting %d objects", len(obj_ids_to_delete))
+            self._db.executemany("DELETE FROM buffers WHERE id = ?", obj_ids_to_delete)
+            self._db.executemany("DELETE FROM objects WHERE id = ?", obj_ids_to_delete)
         logger.debug("Pruning transaction took %.2f s", tx_timer.elapsed)
 
     def extract(self, hdigest, path):
