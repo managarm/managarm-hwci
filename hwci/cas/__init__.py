@@ -60,9 +60,10 @@ class Store:
         # v5 [objects]: Replace hex digests by binary digests.
         # v6 [objects]: Split data into attached database.
         # v7 [digests, objects]: Split digests into own table.
+        # v8 [links]: Add table for links [main.links].
         with sqlite_util.transaction(self._db):
             (db_version,) = self._db.execute("PRAGMA main.user_version").fetchone()
-            if db_version < 7:
+            if db_version < 8:
                 self._db.execute("DROP TABLE IF EXISTS main.objects")
                 # We store digests in a separate table.
                 # This has the advantage that we can first allocate IDs, then commit the
@@ -86,7 +87,16 @@ class Store:
                     )
                     STRICT
                 """)
-                self._db.execute("PRAGMA main.user_version = 7")
+                self._db.execute("""
+                    CREATE TABLE main.links (
+                        id INTEGER,
+                        rank INTEGER,
+                        target_digest BLOB,
+                        PRIMARY KEY (id, rank)
+                    )
+                    STRICT
+                """)
+                self._db.execute("PRAGMA main.user_version = 8")
 
     def _attach_data_db(self):
         self._db.execute(
@@ -135,6 +145,15 @@ class Store:
             NATURAL INNER JOIN objects
             NATURAL INNER JOIN buffers
         """)
+        # Doing the LEFT_JOINs on both tables makes sqlite use a smarter query plan for the walk query.
+        # If we instead JOIN with objects_full, it tries to materialize objects_full.
+        self._db.execute("""
+            CREATE TEMP VIEW links_with_target_objects
+            AS SELECT links.id, rank, target_digest, digests.id AS target_id, objects.meta AS target_meta
+            FROM links
+            LEFT JOIN digests ON links.target_digest = digests.digest
+            LEFT JOIN objects ON digests.id = objects.id;
+        """)
 
     def write_object(self, hdigest, obj):
         singleton_list = [(hdigest, obj)]
@@ -153,9 +172,14 @@ class Store:
         timestamp = int(time.time())
 
         new_objects = []
+        new_links = []
         for hdigest, objbuf in iterable:
             digest = parse_hdigest(hdigest)
             new_objects.append((digest, objbuf))
+
+            if objbuf.meta == b"m":
+                obj = objbuf.to_object()
+                new_links.append((digest, list(obj.merkle_link_digests())))
 
         with (
             hwci.timer_util.Timer() as commit_timer,
@@ -182,9 +206,27 @@ class Store:
                     for digest, objbuf in new_objects
                 ),
             )
+
+            for digest, link_digests in new_links:
+                row = self._db.execute(
+                    "SELECT id FROM digests WHERE digest = ?", (digest,)
+                ).fetchone()
+                assert row is not None
+                (obj_id,) = row
+
+                self._db.executemany(
+                    "INSERT INTO links (id, rank, target_digest) VALUES (?, ?, ?)"
+                    " ON CONFLICT DO NOTHING",
+                    (
+                        (obj_id, i, link_digest)
+                        for i, link_digest in enumerate(link_digests)
+                    ),
+                )
+
         logger.debug(
-            "Wrote %d objects, transaction took %.2f s",
+            "Wrote %d objects, %d links; transaction took %.2f s",
             len(new_objects),
+            sum(len(link_digests) for digest, link_digests in new_links),
             commit_timer.elapsed,
         )
 
@@ -225,24 +267,36 @@ class Store:
     def read_object(self, hdigest):
         return self.read_object_buffer(hdigest).to_object()
 
-    def walk_tree_hdigests_into(self, hdigest, *, hdigest_set, missing_set=None):
-        q = [hdigest]
+    def walk_tree_hdigests_into(self, root_hdigest, *, hdigest_set, missing_set):
+        # Stores (obj_id, meta) pairs.
+        q = []
+
+        def visit(new_hdigest, new_obj_id, new_meta):
+            if new_meta is None:
+                missing_set.add(new_hdigest)
+            elif new_hdigest not in hdigest_set:
+                hdigest_set.add(new_hdigest)
+                if new_meta == b"m":
+                    q.append((new_obj_id, new_meta))
+
+        root_row = self._db.execute(
+            "SELECT id, meta FROM objects_full WHERE digest = ?",
+            (parse_hdigest(root_hdigest),),
+        ).fetchone() or (None, None)
+        root_obj_id, root_meta = root_row
+        visit(root_hdigest, root_obj_id, root_meta)
+
         while q:
-            hdigest = q.pop()
-            if hdigest in hdigest_set:
-                continue
-            meta = self.read_meta_or_none(hdigest)
-            if meta is None:
-                if missing_set is None:
-                    raise KeyError(f"Missing object: {hdigest}")
-                missing_set.add(hdigest)
-                continue
-            hdigest_set.add(hdigest)
-            if meta in {b"m"}:
-                obj = self.read_object(hdigest)
-                q.extend(obj.iter_linked())
-            else:
-                assert meta == b"b"
+            obj_id, meta = q.pop()
+            assert meta == b"m"
+
+            rows = self._db.execute(
+                "SELECT target_digest, target_id, target_meta FROM links_with_target_objects WHERE id = ?",
+                (obj_id,),
+            ).fetchall()
+            for row in rows:
+                link_digest, link_obj_id, link_meta = row
+                visit(link_digest.hex(), link_obj_id, link_meta)
 
     def bump(self, hdigests):
         timestamp = int(time.time())
@@ -298,6 +352,7 @@ class Store:
             logger.info("Deleting %d objects", len(obj_ids_to_delete))
             self._db.executemany("DELETE FROM buffers WHERE id = ?", obj_ids_to_delete)
             self._db.executemany("DELETE FROM objects WHERE id = ?", obj_ids_to_delete)
+            self._db.executemany("DELETE FROM links WHERE id = ?", obj_ids_to_delete)
         logger.debug("Pruning transaction took %.2f s", tx_timer.elapsed)
 
     def extract(self, hdigest, path):
