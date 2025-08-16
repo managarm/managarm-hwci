@@ -59,20 +59,34 @@ class Store:
         # v4 [objects]: Add compression column.
         # v5 [objects]: Replace hex digests by binary digests.
         # v6 [objects]: Split data into attached database.
+        # v7 [digests, objects]: Split digests into own table.
         with sqlite_util.transaction(self._db):
             (db_version,) = self._db.execute("PRAGMA main.user_version").fetchone()
-            if db_version < 6:
+            if db_version < 7:
                 self._db.execute("DROP TABLE IF EXISTS main.objects")
+                # We store digests in a separate table.
+                # This has the advantage that we can first allocate IDs, then commit the
+                # object data and finally insert object meta data (without doing UPDATEs).
+                # Since SQLite stores UNIQUE indices as B-trees that map keys to row IDs, it does
+                # not make a difference for lookup performance whether a separate table is used
+                # or not (however, it does require SQLite to do two lookups when querying
+                # both fields from objects and the digest by ID).
+                self._db.execute("""
+                    CREATE TABLE main.digests (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        digest BLOB UNIQUE
+                    )
+                    STRICT
+                """)
                 self._db.execute("""
                     CREATE TABLE main.objects (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        digest BLOB UNIQUE,
+                        id INTEGER PRIMARY KEY,
                         meta BLOB,
                         last_use INTEGER
                     )
                     STRICT
                 """)
-                self._db.execute("PRAGMA main.user_version = 6")
+                self._db.execute("PRAGMA main.user_version = 7")
 
     def _attach_data_db(self):
         self._db.execute(
@@ -110,8 +124,15 @@ class Store:
         # We create our views in the temporary in-memory DB.
         # Storing them to disk does not offer any advantages anyway.
         self._db.execute("""
+            CREATE TEMP VIEW objects_full
+            AS SELECT id, digest, meta, last_use
+            FROM digests
+            NATURAL INNER JOIN objects
+        """)
+        self._db.execute("""
             CREATE TEMP VIEW objects_with_buffers
-            AS SELECT id, digest, meta, last_use, compression, buffer FROM objects
+            AS SELECT id, digest, meta, last_use, compression, buffer FROM digests
+            NATURAL INNER JOIN objects
             NATURAL INNER JOIN buffers
         """)
 
@@ -131,47 +152,45 @@ class Store:
     def write_many_object_buffers(self, iterable):
         timestamp = int(time.time())
 
-        inserts = []
+        new_objects = []
+        for hdigest, objbuf in iterable:
+            digest = parse_hdigest(hdigest)
+            new_objects.append((digest, objbuf))
+
         with (
             hwci.timer_util.Timer() as commit_timer,
             sqlite_util.transaction(self._db),
         ):
-            for hdigest, objbuf in iterable:
-                digest = parse_hdigest(hdigest)
-                # We expect the object to be absent in most cases.
-                # ence it is better to do INSERT, then SELECT (if insertion fails).
-                row = self._db.execute(
-                    "INSERT INTO objects (digest, meta, last_use)"
-                    " VALUES (?, ?, ?)"
-                    " ON CONFLICT DO NOTHING"
-                    " RETURNING id",
-                    (digest, objbuf.meta, timestamp),
-                ).fetchone()
-                if row is None:
-                    row = self._db.execute(
-                        "SELECT id FROM objects WHERE digest = ?", (digest,)
-                    ).fetchone()
-                    assert row is not None
-                (obj_id,) = row
-                inserts.append((obj_id, objbuf))
+            self._db.executemany(
+                "INSERT INTO digests (digest) VALUES (?) ON CONFLICT DO NOTHING",
+                ((digest,) for digest, objbuf in new_objects),
+            )
 
             self._db.executemany(
-                "INSERT INTO buffers (id, compression, buffer) VALUES (?, ?, ?)"
+                "INSERT INTO objects (id, meta, last_use)"
+                " SELECT (SELECT id FROM digests WHERE digest = ?), ?, ?"
+                " ON CONFLICT DO NOTHING",
+                ((digest, objbuf.meta, timestamp) for digest, objbuf in new_objects),
+            )
+
+            self._db.executemany(
+                "INSERT INTO buffers (id, compression, buffer)"
+                " SELECT (SELECT id FROM digests WHERE digest = ?), ?, ?"
                 " ON CONFLICT DO NOTHING",
                 (
-                    (obj_id, objbuf.compression, objbuf.buffer)
-                    for obj_id, objuf in inserts
+                    (digest, objbuf.compression, objbuf.buffer)
+                    for digest, objbuf in new_objects
                 ),
             )
         logger.debug(
             "Wrote %d objects, transaction took %.2f s",
-            len(inserts),
+            len(new_objects),
             commit_timer.elapsed,
         )
 
     def read_meta_or_none(self, hdigest):
         row = self._db.execute(
-            "SELECT meta FROM objects WHERE digest = ?", (parse_hdigest(hdigest),)
+            "SELECT meta FROM objects_full WHERE digest = ?", (parse_hdigest(hdigest),)
         ).fetchone()
         if row is None:
             return None
@@ -229,7 +248,8 @@ class Store:
         timestamp = int(time.time())
         with sqlite_util.transaction(self._db):
             self._db.executemany(
-                "UPDATE objects SET last_use = ? WHERE digest = ?",
+                "UPDATE objects SET last_use = ?"
+                " FROM digests WHERE objects.id = digests.id AND digest = ?",
                 [(timestamp, parse_hdigest(hdigest)) for hdigest in hdigests],
             )
 
