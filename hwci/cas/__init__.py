@@ -19,6 +19,10 @@ SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 DIGEST_SIZE = hashlib.sha256().digest_size
 
 
+def make_hdigest(digest):
+    return digest.hex()
+
+
 def parse_hdigest(hdigest):
     if not SHA256_RE.fullmatch(hdigest):
         raise ValueError(f"Rejecting hexdigest: {hdigest}")
@@ -267,24 +271,24 @@ class Store:
     def read_object(self, hdigest):
         return self.read_object_buffer(hdigest).to_object()
 
-    def walk_tree_hdigests_into(self, root_hdigest, *, hdigest_set, missing_set):
+    def walk_tree_digests_into(self, root_digest, *, digest_set, missing_set):
         # Stores (obj_id, meta) pairs.
         q = []
 
-        def visit(new_hdigest, new_obj_id, new_meta):
+        def visit(new_digest, new_obj_id, new_meta):
             if new_meta is None:
-                missing_set.add(new_hdigest)
-            elif new_hdigest not in hdigest_set:
-                hdigest_set.add(new_hdigest)
+                missing_set.add(new_digest)
+            elif new_digest not in digest_set:
+                digest_set.add(new_digest)
                 if new_meta == b"m":
                     q.append((new_obj_id, new_meta))
 
         root_row = self._db.execute(
             "SELECT id, meta FROM objects_full WHERE digest = ?",
-            (parse_hdigest(root_hdigest),),
+            (root_digest,),
         ).fetchone() or (None, None)
         root_obj_id, root_meta = root_row
-        visit(root_hdigest, root_obj_id, root_meta)
+        visit(root_digest, root_obj_id, root_meta)
 
         while q:
             obj_id, meta = q.pop()
@@ -296,15 +300,15 @@ class Store:
             ).fetchall()
             for row in rows:
                 link_digest, link_obj_id, link_meta = row
-                visit(link_digest.hex(), link_obj_id, link_meta)
+                visit(link_digest, link_obj_id, link_meta)
 
-    def bump(self, hdigests):
+    def bump(self, digests):
         timestamp = int(time.time())
         with sqlite_util.transaction(self._db):
             self._db.executemany(
                 "UPDATE objects SET last_use = ?"
                 " FROM digests WHERE objects.id = digests.id AND digest = ?",
-                [(timestamp, parse_hdigest(hdigest)) for hdigest in hdigests],
+                [(timestamp, digest) for digest in digests],
             )
 
     def prune(self, keep_hdigests):
@@ -315,8 +319,10 @@ class Store:
             full_keep_set = set()
             missing_set = set()
             for hdigest in keep_hdigests:
-                self.walk_tree_hdigests_into(
-                    hdigest, hdigest_set=full_keep_set, missing_set=missing_set
+                self.walk_tree_digests_into(
+                    parse_hdigest(hdigest),
+                    digest_set=full_keep_set,
+                    missing_set=missing_set,
                 )
             logger.info(
                 "Keeping %d objects (walked trees in %.2f s)",
@@ -345,7 +351,7 @@ class Store:
             for obj_id, digest, last_use, size in cursor:
                 if total_size < size_threshold and last_use >= cutoff:
                     break
-                if digest.hex() not in full_keep_set:
+                if digest not in full_keep_set:
                     obj_ids_to_delete.append((obj_id,))
                     total_size -= size
 

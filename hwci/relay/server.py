@@ -102,7 +102,9 @@ async def get_missing(request):
     engine = ENGINE.get()
     run = engine.get_run(run_id)
 
-    return web.json_response(run.missing_objects())
+    return web.json_response(
+        [hwci.cas.make_hdigest(digest) for digest in run.missing_objects()]
+    )
 
 
 @routes.get("/runs/{run_id}/console")

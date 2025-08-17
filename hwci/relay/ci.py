@@ -112,9 +112,9 @@ class Run:
         roots = list(self.get_root_objects())
         with hwci.timer_util.Timer() as walk_timer:
             for hdigest in roots:
-                self.engine.cas.walk_tree_hdigests_into(
-                    hdigest,
-                    hdigest_set=self._object_set,
+                self.engine.cas.walk_tree_digests_into(
+                    hwci.cas.parse_hdigest(hdigest),
+                    digest_set=self._object_set,
                     missing_set=self._missing_set,
                 )
         logger.debug(
@@ -134,13 +134,15 @@ class Run:
         return list(self._missing_set)
 
     def notify_objects(self, new_hdigests):
-        self._missing_set.difference_update(new_hdigests)
+        self._missing_set.difference_update(
+            hwci.cas.parse_hdigest(hdigest) for hdigest in new_hdigests
+        )
 
         with hwci.timer_util.Timer() as walk_timer:
             for hdigest in new_hdigests:
-                self.engine.cas.walk_tree_hdigests_into(
-                    hdigest,
-                    hdigest_set=self._object_set,
+                self.engine.cas.walk_tree_digests_into(
+                    hwci.cas.parse_hdigest(hdigest),
+                    digest_set=self._object_set,
                     missing_set=self._missing_set,
                 )
         logger.debug(
