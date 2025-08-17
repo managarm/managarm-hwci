@@ -310,16 +310,16 @@ class Store:
                 [(timestamp, digest) for digest in digests],
             )
 
-    def prune(self, keep_hdigests):
+    def prune(self, keep_digests):
         logger.info("Running object storage pruning")
 
         with hwci.timer_util.Timer() as walk_timer:
             # We can ignore missing_set here.
             full_keep_set = set()
             missing_set = set()
-            for hdigest in keep_hdigests:
+            for digest in keep_digests:
                 self.walk_tree_digests_into(
-                    parse_hdigest(hdigest),
+                    digest,
                     digest_set=full_keep_set,
                     missing_set=missing_set,
                 )
@@ -417,12 +417,9 @@ class Object:
             for d in range(0, len(self.data), DIGEST_SIZE)
         ]
 
-    def merkle_link_hdigests(self):
-        return [digest.hex() for digest in self.merkle_link_digests()]
-
     def iter_linked(self):
         if self.meta == b"m":
-            yield from self.merkle_link_hdigests()
+            yield from self.merkle_link_digests()
         else:
             assert self.meta == b"b"
 

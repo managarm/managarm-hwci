@@ -117,10 +117,10 @@ async def post_updates(request):
 async def prune_periodically(engine):
     while True:
         try:
-            keep_hdigests = set()
+            keep_digests = set()
             for run in engine.get_all_runs():
-                keep_hdigests.update(run.get_root_objects())
-            engine.cas.prune(keep_hdigests)
+                keep_digests.update(run.get_root_objects())
+            engine.cas.prune(keep_digests)
         except Exception:
             logger.exception("Pruning failed")
         await asyncio.sleep(12 * 60 * 60)

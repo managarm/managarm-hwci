@@ -111,9 +111,9 @@ class Run:
 
         roots = list(self.get_root_objects())
         with hwci.timer_util.Timer() as walk_timer:
-            for hdigest in roots:
+            for digest in roots:
                 self.engine.cas.walk_tree_digests_into(
-                    hwci.cas.parse_hdigest(hdigest),
+                    digest,
                     digest_set=self._object_set,
                     missing_set=self._missing_set,
                 )
@@ -126,9 +126,10 @@ class Run:
         )
 
     def get_root_objects(self):
-        yield from self.tftp.values()
+        for hdigest in self.tftp.values():
+            yield hwci.cas.parse_hdigest(hdigest)
         if self.image:
-            yield self.image
+            yield hwci.cas.parse_hdigest(self.image)
 
     def missing_objects(self):
         return list(self._missing_set)
