@@ -289,7 +289,7 @@ class Run:
                 if not part or part == "." or part == "..":
                     raise RuntimeError(f"Path is rejected: {path}")
             self.engine.cas.extract(
-                hdigest,
+                hwci.cas.parse_hdigest(hdigest),
                 os.path.join(self.device.cfg.tftp, path),
             )
 
@@ -297,7 +297,7 @@ class Run:
             logger.info("Setting up image %s via blockd", self.device.cfg.image)
             with hwci.timer_util.Timer() as image_timer:
                 with open(self.device.cfg.image, "r+b") as f:
-                    self.engine.cas.extract_to(self.image, f)
+                    self.engine.cas.extract_to(hwci.cas.parse_hdigest(self.image), f)
                     f.truncate()
             logger.debug("Wrote image in %.2f s", image_timer.elapsed)
 

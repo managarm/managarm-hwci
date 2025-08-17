@@ -201,7 +201,9 @@ class Run:
                     break
                 logger.debug("Target is missing %d objects", len(missing_on_target))
 
-                queue = missing_on_target
+                queue = [
+                    hwci.cas.parse_hdigest(hdigest) for hdigest in missing_on_target
+                ]
                 semaphore = asyncio.Semaphore(4)
                 async with asyncio.TaskGroup() as tg:
                     while queue:
@@ -253,9 +255,9 @@ class Run:
         chunk = {}
         n = 0
         while queue:
-            hdigest = queue.pop()
-            objbuf = self.engine.cas.read_object_buffer(hdigest)
-            chunk[hdigest] = objbuf
+            digest = queue.pop()
+            objbuf = self.engine.cas.read_object_buffer(digest)
+            chunk[digest] = objbuf
             n += len(objbuf.buffer)
             if n > 128 * 1024 * 1024:
                 break
@@ -289,8 +291,7 @@ class Run:
 
         with hwci.timer_util.Timer() as timer:
             serializer = hwci.cas.Serializer()
-            for hdigest, objbuf in objbufs.items():
-                digest = bytes.fromhex(hdigest)
+            for digest, objbuf in objbufs.items():
                 serializer.serialize(digest, objbuf)
             response = await self.engine._http_client.post(
                 f"http://{self.device.host}:10898/runs/{self.run_id}/files",

@@ -234,42 +234,42 @@ class Store:
             commit_timer.elapsed,
         )
 
-    def read_meta_or_none(self, hdigest):
+    def read_meta_or_none(self, digest):
         row = self._db.execute(
-            "SELECT meta FROM objects_full WHERE digest = ?", (parse_hdigest(hdigest),)
+            "SELECT meta FROM objects_full WHERE digest = ?", (digest,)
         ).fetchone()
         if row is None:
             return None
         (meta,) = row
         return meta
 
-    def read_meta(self, hdigest):
-        meta = self.read_meta_or_none(hdigest)
+    def read_meta(self, digest):
+        meta = self.read_meta_or_none(digest)
         if meta is None:
-            raise KeyError(f"Missing object: {hdigest}")
+            raise KeyError(f"Missing object: {make_hdigest(digest)}")
         return meta
 
-    def read_object_buffer_or_none(self, hdigest):
+    def read_object_buffer_or_none(self, digest):
         row = self._db.execute(
             "SELECT meta, compression, buffer FROM objects_with_buffers WHERE digest = ?",
-            (parse_hdigest(hdigest),),
+            (digest,),
         ).fetchone()
         if row is None:
             return None
         (meta, compression, buffer) = row
         return ObjectBuffer(meta, buffer, compression=compression)
 
-    def read_object_buffer(self, hdigest):
-        objbuf = self.read_object_buffer_or_none(hdigest)
+    def read_object_buffer(self, digest):
+        objbuf = self.read_object_buffer_or_none(digest)
         if objbuf is None:
-            raise KeyError(f"Missing object: {hdigest}")
+            raise KeyError(f"Missing object: {make_hdigest(digest)}")
         return objbuf
 
-    def read_object_or_none(self, hdigest):
-        return self.read_object_buffer_or_none(hdigest).to_object()
+    def read_object_or_none(self, digest):
+        return self.read_object_buffer_or_none(digest).to_object()
 
-    def read_object(self, hdigest):
-        return self.read_object_buffer(hdigest).to_object()
+    def read_object(self, digest):
+        return self.read_object_buffer(digest).to_object()
 
     def walk_tree_digests_into(self, root_digest, *, digest_set, missing_set):
         # Stores (obj_id, meta) pairs.
@@ -361,15 +361,15 @@ class Store:
             self._db.executemany("DELETE FROM links WHERE id = ?", obj_ids_to_delete)
         logger.debug("Pruning transaction took %.2f s", tx_timer.elapsed)
 
-    def extract(self, hdigest, path):
+    def extract(self, digest, path):
         with open(path, "wb") as f:
-            self.extract_to(hdigest, f)
+            self.extract_to(digest, f)
 
-    def extract_to(self, hdigest, f):
-        obj = self.read_object(hdigest)
+    def extract_to(self, digest, f):
+        obj = self.read_object(digest)
         if obj.meta == b"m":
-            for link_hdigest in obj.merkle_link_hdigests():
-                self.extract_to(link_hdigest, f)
+            for link_digest in obj.merkle_link_digests():
+                self.extract_to(link_digest, f)
         else:
             assert obj.meta == b"b"
             f.write(obj.data)
