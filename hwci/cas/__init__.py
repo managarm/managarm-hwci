@@ -159,17 +159,17 @@ class Store:
             LEFT JOIN objects ON digests.id = objects.id;
         """)
 
-    def write_object(self, hdigest, obj):
-        singleton_list = [(hdigest, obj)]
+    def write_object(self, digest, obj):
+        singleton_list = [(digest, obj)]
         self.write_many_objects(singleton_list)
 
     def write_many_objects(self, iterable):
         self.write_many_object_buffers(
-            (hdigest, obj.to_object_buffer()) for hdigest, obj in iterable
+            (digest, obj.to_object_buffer()) for digest, obj in iterable
         )
 
-    def write_object_buffer(self, hdigest, objbuf):
-        singleton_list = [(hdigest, objbuf)]
+    def write_object_buffer(self, digest, objbuf):
+        singleton_list = [(digest, objbuf)]
         self.write_many_object_buffers(singleton_list)
 
     def write_many_object_buffers(self, iterable):
@@ -177,8 +177,7 @@ class Store:
 
         new_objects = []
         new_links = []
-        for hdigest, objbuf in iterable:
-            digest = parse_hdigest(hdigest)
+        for digest, objbuf in iterable:
             new_objects.append((digest, objbuf))
 
             if objbuf.meta == b"m":
@@ -472,14 +471,11 @@ class ObjectBuffer:
             assert not self.compression
             return self
 
-    def validate(self, hdigest):
-        if not SHA256_RE.fullmatch(hdigest):
-            raise RuntimeError(f"Rejecting hexdigest: {hdigest}")
-
-        computed_hdigest = self.to_object().hdigest()
-        if computed_hdigest != hdigest:
+    def validate(self, digest):
+        computed_digest = self.to_object().digest()
+        if computed_digest != digest:
             raise RuntimeError(
-                f"SHA256 mismatch, expected {hdigest}, got {computed_hdigest}"
+                f"SHA256 mismatch, expected {make_hdigest(digest)}, got {make_hdigest(computed_digest)}"
             )
 
 

@@ -133,21 +133,19 @@ class Run:
     def missing_objects(self):
         return list(self._missing_set)
 
-    def notify_objects(self, new_hdigests):
-        self._missing_set.difference_update(
-            hwci.cas.parse_hdigest(hdigest) for hdigest in new_hdigests
-        )
+    def notify_objects(self, new_digests):
+        self._missing_set.difference_update(new_digests)
 
         with hwci.timer_util.Timer() as walk_timer:
-            for hdigest in new_hdigests:
+            for digest in new_digests:
                 self.engine.cas.walk_tree_digests_into(
-                    hwci.cas.parse_hdigest(hdigest),
+                    digest,
                     digest_set=self._object_set,
                     missing_set=self._missing_set,
                 )
         logger.debug(
             "Walking %d trees took %.2f s (objects: %d, missing: %d)",
-            len(new_hdigests),
+            len(new_digests),
             walk_timer.elapsed,
             len(self._object_set),
             len(self._missing_set),

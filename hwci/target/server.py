@@ -33,20 +33,19 @@ async def post_files(request):
 
     deserializer = hwci.cas.Deserializer(buf)
     writes = []
-    hdigests = []
+    digests = []
     while True:
         item = deserializer.deserialize()
         if item is None:
             break
         digest, objbuf = item
-        hdigest = digest.hex()
-        writes.append((hdigest, objbuf))
-        hdigests.append(hdigest)
+        writes.append((digest, objbuf))
+        digests.append(digest)
 
     engine.cas.write_many_object_buffers(writes)
     logger.info("Received %d objects", len(writes))
 
-    run.notify_objects(hdigests)
+    run.notify_objects(digests)
 
     return web.Response(text="OK")
 
