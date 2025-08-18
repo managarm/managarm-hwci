@@ -26,7 +26,6 @@ class Engine:
         "cas",
         "_devices",
         "_runs",
-        "_q",
         "_http_client",
     )
 
@@ -35,7 +34,6 @@ class Engine:
         self.cas = hwci.cas.Store("relay_objects")
         self._devices = {}
         self._runs = {}
-        self._q = asyncio.Queue()
         self._http_client = aiohttp.ClientSession()
 
         for name, host in cfg.devices.items():
@@ -54,12 +52,9 @@ class Engine:
         return self._runs.values()
 
     async def run(self):
-        while True:
-            run = await self._q.get()
-            try:
-                await run._dispatch()
-            except Exception as e:
-                logger.error("Unhandled exception while dispatching run", exc_info=e)
+        async with asyncio.TaskGroup() as tg:
+            for device in self._devices.values():
+                tg.create_task(device.run_dispatch_loop())
 
 
 class Device:
@@ -67,12 +62,22 @@ class Device:
         "engine",
         "name",
         "host",
+        "_q",
     )
 
     def __init__(self, engine, name, host):
         self.engine = engine
         self.name = name
         self.host = host
+        self._q = asyncio.Queue()
+
+    async def run_dispatch_loop(self):
+        while True:
+            run = await self._q.get()
+            try:
+                await run._dispatch()
+            except Exception as e:
+                logger.error("Unhandled exception while dispatching run", exc_info=e)
 
 
 class Run:
@@ -154,7 +159,7 @@ class Run:
 
     def submit(self):
         self.engine.cas.bump(self._object_set)
-        self.engine._q.put_nowait(self)
+        self.device._q.put_nowait(self)
 
     def terminate(self):
         self._terminate_event.set()

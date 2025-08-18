@@ -42,7 +42,6 @@ class Engine:
         "cas",
         "_devices",
         "_runs",
-        "_q",
         "_http_client",
     )
 
@@ -51,7 +50,6 @@ class Engine:
         self.cas = hwci.cas.Store("target_objects")
         self._devices = {}
         self._runs = {}
-        self._q = asyncio.Queue()
         self._http_client = aiohttp.ClientSession()
 
         for name, device_cfg in cfg.devices.items():
@@ -70,16 +68,9 @@ class Engine:
         return self._runs.values()
 
     async def run(self):
-        while True:
-            run = await self._q.get()
-            try:
-                await run._dispatch()
-            except Exception as e:
-                logger.error("Unhandled exception while dispatching run", exc_info=e)
-            try:
-                await run._shutdown()
-            except Exception:
-                logger.exception("Exception in run shutdown")
+        async with asyncio.TaskGroup() as tg:
+            for device in self._devices.values():
+                tg.create_task(device.run_dispatch_loop())
 
 
 class Device:
@@ -90,6 +81,7 @@ class Device:
         "run",
         "_uart_path",
         "_switch",
+        "_q",
     )
 
     def __init__(self, engine, name, cfg):
@@ -99,6 +91,19 @@ class Device:
         self.run = None
         self._uart_path = cfg.uart
         self._switch = hwci.target.shelly.Switch(engine._http_client, cfg.switch.shelly)
+        self._q = asyncio.Queue()
+
+    async def run_dispatch_loop(self):
+        while True:
+            run = await self._q.get()
+            try:
+                await run._dispatch()
+            except Exception as e:
+                logger.error("Unhandled exception while dispatching run", exc_info=e)
+            try:
+                await run._shutdown()
+            except Exception:
+                logger.exception("Exception in run shutdown")
 
     def _setup_tty(self, fd):
         baud = termios.B115200
@@ -219,7 +224,7 @@ class Run:
 
     def submit(self):
         self.engine.cas.bump(self._object_set)
-        self.engine._q.put_nowait(self)
+        self.device._q.put_nowait(self)
 
     def terminate(self):
         self._terminate_event.set()
