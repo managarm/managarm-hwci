@@ -373,6 +373,14 @@ class Store:
             assert obj.meta == b"b"
             f.write(obj.data)
 
+    def optimize_db(self, *, dry_run=False):
+        if dry_run:
+            rows = self._db.execute("PRAGMA optimize(0x10003)").fetchall()
+            logger.debug("optimize dry-run does:", rows)
+        else:
+            rows = self._db.execute("PRAGMA optimize(0x10002)").fetchall()
+            logger.debug("optimize run does:", rows)
+
 
 class Object:
     ALLOWED_META = {b"b", b"m"}
