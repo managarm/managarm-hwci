@@ -101,7 +101,9 @@ async def get_updates(request):
     run_id = request.match_info["run_id"]
     run = engine.get_run(run_id)
 
-    ws = web.WebSocketResponse()
+    # Sending a heartbeat is cheaper than using a receive timeout.
+    # Hence, we rely on a server-to-client heartbeat to check responsiveness.
+    ws = web.WebSocketResponse(heartbeat=20)
     await ws.prepare(request)
 
     async def forward_logs():
@@ -114,8 +116,12 @@ async def get_updates(request):
     async with asyncio.TaskGroup() as tg:
         tg.create_task(forward_logs())
 
+        # We can only read from the WS inside this task (due to aiohttp limitations).
         async for msg in ws:
-            raise RuntimeError(f"Unexpected message type {msg.type} on WebSocket")
+            if msg.type == web.WSMsgType.ERROR:
+                raise RuntimeError(f"Received websocket error: {msg.data}")
+            else:
+                raise RuntimeError(f"Unexpected message type {msg.type} on WebSocket")
 
     return ws
 

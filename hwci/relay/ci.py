@@ -250,6 +250,10 @@ class Run:
                     async with self._cond:
                         self._logs += msg.data
                         self._cond.notify_all()
+                elif msg.type == aiohttp.WSMsgType.ERROR:
+                    raise RuntimeError(
+                        f"Received error message on WebSocket: {msg.data}"
+                    )
                 else:
                     raise RuntimeError(
                         f"Unexpected message type {msg.type} on WebSocket"

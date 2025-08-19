@@ -281,12 +281,15 @@ class Run:
         async with self.session.ws_connect(
             urljoin(f"{self.relay}/", f"runs/{self._run_id}/console"),
             headers={"Authorization": f"Bearer {self.token}"},
-            heartbeat=5,
         ) as ws:
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     data = json.loads(msg.data)
                     print(data["chunk"], end="", flush=True)
+                elif msg.type == aiohttp.WSMsgType.ERROR:
+                    raise RuntimeError(
+                        f"Received error message on WebSocket: {msg.data}"
+                    )
                 else:
                     raise RuntimeError(
                         f"Unexpected message type {msg.type} on WebSocket"

@@ -108,12 +108,14 @@ async def get_missing(request):
 
 @routes.get("/runs/{run_id}/console")
 async def get_console(request):
-    ws = web.WebSocketResponse()
-    await ws.prepare(request)
-
     engine = ENGINE.get()
     run_id = request.match_info["run_id"]
     run = engine.get_run(run_id)
+
+    # Sending a heartbeat is cheaper than using a receive timeout.
+    # Hence, we rely on a server-to-client heartbeat to check responsiveness.
+    ws = web.WebSocketResponse(heartbeat=20)
+    await ws.prepare(request)
 
     async def forward_console():
         try:
@@ -128,7 +130,12 @@ async def get_console(request):
         # We can only read from the WS inside this task (due to aiohttp limitations).
         try:
             async for msg in ws:
-                raise RuntimeError(f"Unexpected message type {msg.type} on WebSocket")
+                if msg.type == web.WSMsgType.ERROR:
+                    raise RuntimeError(f"Received websocket error: {msg.data}")
+                else:
+                    raise RuntimeError(
+                        f"Unexpected message type {msg.type} on WebSocket"
+                    )
         finally:
             # Terminate the run when the WebSocket is disconnected.
             run.terminate()
