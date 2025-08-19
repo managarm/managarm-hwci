@@ -95,23 +95,29 @@ async def post_terminate(request):
     return web.Response(text="OK")
 
 
-@routes.post("/runs/{run_id}/updates")
-async def post_updates(request):
+@routes.get("/runs/{run_id}/updates")
+async def get_updates(request):
     engine = ENGINE.get()
     run_id = request.match_info["run_id"]
-
     run = engine.get_run(run_id)
 
-    response = web.StreamResponse()
-    await response.prepare(request)
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
 
-    async for buf in run.iter_logs():
-        await response.write(buf)
-    await response.write_eof()
+    async def forward_logs():
+        try:
+            async for buf in run.iter_logs():
+                await ws.send_bytes(buf)
+        finally:
+            await ws.close()
 
-    return response
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(forward_logs())
 
-    return web.Response(text="OK")
+        async for msg in ws:
+            raise RuntimeError(f"Unexpected message type {msg.type} on WebSocket")
+
+    return ws
 
 
 async def prune_periodically(engine):

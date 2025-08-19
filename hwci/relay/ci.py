@@ -242,18 +242,18 @@ class Run:
         if mock_targets:
             return
 
-        response = await self.engine._http_client.post(
-            f"http://{self.device.host}:10898/runs/{self.run_id}/updates",
-        )
-        response.raise_for_status()
-
-        while True:
-            chunk = await response.content.read(4096)
-            if not chunk:
-                break
-            async with self._cond:
-                self._logs += chunk
-                self._cond.notify_all()
+        async with self.engine._http_client.ws_connect(
+            f"http://{self.device.host}:10898/runs/{self.run_id}/updates"
+        ) as ws:
+            async for msg in ws:
+                if msg.type == aiohttp.WSMsgType.BINARY:
+                    async with self._cond:
+                        self._logs += msg.data
+                        self._cond.notify_all()
+                else:
+                    raise RuntimeError(
+                        f"Unexpected message type {msg.type} on WebSocket"
+                    )
 
     def _group_objects_for_upload(self, queue):
         chunk = {}
