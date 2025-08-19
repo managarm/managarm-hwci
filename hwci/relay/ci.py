@@ -213,7 +213,7 @@ class Run:
                     while queue:
                         await semaphore.acquire()
                         with self._retrieve_timer:
-                            objbufs = self._group_objects_for_upload(queue)
+                            objbufs = await self._group_objects_for_upload(queue)
                         task = tg.create_task(self._upload(objbufs))
                         task.add_done_callback(lambda task: semaphore.release())
                         nbytes += sum(len(objbuf.buffer) for objbuf in objbufs.values())
@@ -259,7 +259,7 @@ class Run:
                         f"Unexpected message type {msg.type} on WebSocket"
                     )
 
-    def _group_objects_for_upload(self, queue):
+    async def _group_objects_for_upload(self, queue):
         chunk = {}
         n = 0
         while queue:
@@ -269,6 +269,9 @@ class Run:
             n += len(objbuf.buffer)
             if n > 128 * 1024 * 1024:
                 break
+            # We have to run _group_objects_for_upload() on the main thread due to sqlite3 limitations.
+            # Yield periodically such that we do not block the main thread.
+            await asyncio.sleep(0)
         return chunk
 
     async def _new_run(self):
