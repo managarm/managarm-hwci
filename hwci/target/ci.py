@@ -82,6 +82,7 @@ class Device:
         "_uart_path",
         "_switch",
         "_q",
+        "_image_extracted_sequence",
     )
 
     def __init__(self, engine, name, cfg):
@@ -92,6 +93,7 @@ class Device:
         self._uart_path = cfg.uart
         self._switch = hwci.target.shelly.Switch(engine._http_client, cfg.switch.shelly)
         self._q = asyncio.Queue()
+        self._image_extracted_sequence = None
 
     async def run_dispatch_loop(self):
         while True:
@@ -301,8 +303,13 @@ class Run:
             logger.info("Setting up image %s via blockd", self.device.cfg.image)
             with hwci.timer_util.Timer() as image_timer:
                 with open(self.device.cfg.image, "r+b") as f:
-                    self.engine.cas.extract_to(hwci.cas.parse_hdigest(self.image), f)
+                    extracted_sequence = self.engine.cas.delta_extract_to(
+                        hwci.cas.parse_hdigest(self.image),
+                        f,
+                        ref_sequence=self.device._image_extracted_sequence,
+                    )
                     f.truncate()
+            self.device._image_extracted_sequence = extracted_sequence
             logger.debug("Wrote image in %.2f s", image_timer.elapsed)
 
             self._blockd_client = hwci.blockd.client.Client()

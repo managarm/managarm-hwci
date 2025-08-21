@@ -1,4 +1,5 @@
 import asyncio
+import collections
 import concurrent.futures
 import hashlib
 import logging
@@ -372,6 +373,60 @@ class Store:
         else:
             assert obj.meta == b"b"
             f.write(obj.data)
+
+    def extraction_blob_sequence(self, root_digest):
+        q = collections.deque()
+
+        root_row = self._db.execute(
+            "SELECT id, meta FROM objects_full WHERE digest = ?",
+            (root_digest,),
+        ).fetchone() or (None, None)
+        root_obj_id, root_meta = root_row
+        q.append((root_digest, root_obj_id, root_meta))
+
+        out = []
+        while q:
+            digest, obj_id, meta = q.popleft()
+            if meta == b"m":
+                rows = self._db.execute(
+                    "SELECT target_digest, target_id, target_meta FROM links_with_target_objects WHERE id = ? ORDER BY rank",
+                    (obj_id,),
+                ).fetchall()
+                q.extendleft(rows)
+            else:
+                assert meta == b"b"
+                out.append(digest)
+        return out
+
+    def delta_extract(self, root_digest, path, *, ref_sequence=None):
+        with open(path, "wb") as f:
+            return self.delta_extract_to(root_digest, f, ref_sequence=ref_sequence)
+
+    def delta_extract_to(self, root_digest, f, *, ref_sequence=None):
+        sequence = []
+        if ref_sequence is None:
+            ref_sequence = []
+        p = 0  # File position.
+        k = 0  # Indexes into ref_sequence.
+        for digest in self.extraction_blob_sequence(root_digest):
+            while k < len(ref_sequence):
+                ref_p, ref_digest, ref_size = ref_sequence[k]
+                if p <= ref_p:
+                    break
+                k += 1
+            else:
+                ref_p, ref_digest, ref_size = (None, None, None)
+
+            if p == ref_p and digest == ref_digest:
+                sequence.append((p, ref_digest, ref_size))
+                f.seek(ref_size, os.SEEK_CUR)
+                p += ref_size
+            else:
+                obj = self.read_object(digest)
+                sequence.append((p, digest, len(obj.data)))
+                f.write(obj.data)
+                p += len(obj.data)
+        return sequence
 
     def optimize_db(self, *, dry_run=False):
         if dry_run:
