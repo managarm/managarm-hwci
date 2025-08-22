@@ -392,14 +392,15 @@ class Store:
                     "SELECT target_digest, target_id, target_meta FROM links_with_target_objects WHERE id = ? ORDER BY rank",
                     (obj_id,),
                 ).fetchall()
-                q.extendleft(rows)
+                # Note: extendleft() inserts in reversed order.
+                q.extendleft(reversed(rows))
             else:
                 assert meta == b"b"
                 out.append(digest)
         return out
 
     def delta_extract(self, root_digest, path, *, ref_sequence=None):
-        with open(path, "wb") as f:
+        with open(path, "r+b") as f:
             return self.delta_extract_to(root_digest, f, ref_sequence=ref_sequence)
 
     def delta_extract_to(self, root_digest, f, *, ref_sequence=None):
