@@ -8,6 +8,7 @@ class SetupCommand(pydantic.BaseModel):
     cmd: typing.Literal["setup"] = "setup"
     backing_file: BackingFile
     nqn: str
+    snapshot: bool
 
 
 class Status(pydantic.BaseModel):

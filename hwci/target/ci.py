@@ -34,6 +34,7 @@ class DeviceConfig(pydantic.BaseModel):
 
 class Config(pydantic.BaseModel):
     devices: typing.Dict[str, DeviceConfig]
+    snapshot: bool = False
 
 
 class Engine:
@@ -303,10 +304,14 @@ class Run:
             logger.info("Setting up image %s via blockd", self.device.cfg.image)
             with hwci.timer_util.Timer() as image_timer:
                 with open(self.device.cfg.image, "r+b") as f:
+                    ref_sequence = None
+                    # Only use delta extraction if we can create a snapshot of the file by using reflinks.
+                    if self.engine.cfg.snapshot:
+                        ref_sequence = self.device._image_extracted_sequence
                     extracted_sequence = self.engine.cas.delta_extract_to(
                         hwci.cas.parse_hdigest(self.image),
                         f,
-                        ref_sequence=self.device._image_extracted_sequence,
+                        ref_sequence=ref_sequence,
                     )
                     f.truncate()
             self.device._image_extracted_sequence = extracted_sequence
@@ -316,6 +321,7 @@ class Run:
             await self._blockd_client.setup(
                 "nqn.2024-12.org.managarm:nvme:managarm-boot",
                 os.path.basename(self.device.cfg.image),
+                snapshot=self.engine.cfg.snapshot,
             )
 
     async def _supervise(self, uart_task):

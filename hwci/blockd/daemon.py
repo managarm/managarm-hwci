@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import fcntl
 import json
 import logging
 import os
@@ -14,18 +15,39 @@ nvmet_path = os.path.join(configfs_path, "nvmet")
 
 logger = logging.getLogger(__name__)
 
+# To debug snapshots on non-reflink FSes.
+fake_reflink = False
+
 
 class BackingFile:
-    __slots__ = ("name", "_path")
+    __slots__ = ("name", "snapshot", "_backing_path", "_snapshot_path")
 
-    def __init__(self, name, *, blockdir):
+    def __init__(self, name, *, blockdir, snapshot):
         self.name = name
+        self.snapshot = snapshot
+        self._backing_path = os.path.join(blockdir, name)
 
-        self._path = os.path.join(blockdir, name)
+        if self.snapshot:
+            self._snapshot_path = os.path.join(blockdir, name + ".snapshot")
+            with (
+                open(self._backing_path, "rb") as backing_f,
+                open(self._snapshot_path, "wb") as snapshot_f,
+            ):
+                if not fake_reflink:
+                    fcntl.ioctl(snapshot_f.fileno(), fcntl.FICLONE, backing_f.fileno())
+                else:
+                    shutil.copyfileobj(backing_f, snapshot_f)
+
+    def cleanup(self):
+        if self.snapshot:
+            os.unlink(self._snapshot_path)
 
     @property
     def path(self):
-        return self._path
+        if self.snapshot:
+            return self._snapshot_path
+        else:
+            return self._backing_path
 
 
 class BlockDev:
@@ -146,6 +168,8 @@ class Connection:
             self._nvme_subsystem.shutdown()
         if self._blockdev:
             self._blockdev.shutdown()
+        if self._backing_file:
+            self._backing_file.cleanup()
 
     async def handle_cmd(self, reader, writer, *, blockdir):
         cmdlen = int.from_bytes(await reader.readexactly(4), "little")
@@ -156,7 +180,9 @@ class Connection:
 
         assert isinstance(command, models.SetupCommand)
 
-        self._backing_file = BackingFile(command.backing_file, blockdir=blockdir)
+        self._backing_file = BackingFile(
+            command.backing_file, blockdir=blockdir, snapshot=command.snapshot
+        )
         if not os.path.exists(self._backing_file.path):
             raise RuntimeError(f"Backing file {command.backing_file} does not exist")
 

@@ -16,12 +16,13 @@ class Client:
         self._reader = None
         self._writer = None
 
-    async def setup(self, nqn, backing_file):
+    async def setup(self, nqn, backing_file, *, snapshot):
         await self._connect()
 
         command = hwci.blockd.models.SetupCommand(
             backing_file=backing_file,
             nqn=nqn,
+            snapshot=snapshot,
         )
         cmdbuf = command.model_dump_json().encode("utf-8")
 
