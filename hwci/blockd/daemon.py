@@ -9,6 +9,9 @@ import subprocess
 
 import hwci.blockd.models as models
 
+# ioctl number. Not exposed in Python before 3.12.
+FICLONE = 0x40049409
+
 configfs_path = "/sys/kernel/config"
 
 nvmet_path = os.path.join(configfs_path, "nvmet")
@@ -34,7 +37,7 @@ class BackingFile:
                 open(self._snapshot_path, "wb") as snapshot_f,
             ):
                 if not fake_reflink:
-                    fcntl.ioctl(snapshot_f.fileno(), fcntl.FICLONE, backing_f.fileno())
+                    fcntl.ioctl(snapshot_f.fileno(), FICLONE, backing_f.fileno())
                 else:
                     shutil.copyfileobj(backing_f, snapshot_f)
 
