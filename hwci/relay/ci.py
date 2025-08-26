@@ -208,7 +208,9 @@ class Run:
                 queue = [
                     hwci.cas.parse_hdigest(hdigest) for hdigest in missing_on_target
                 ]
-                semaphore = asyncio.Semaphore(4)
+                # Note that larger upload sizes (in _group_objects_for_upload())
+                # and high number of concurrent uploads also result in higher RAM usage.
+                semaphore = asyncio.Semaphore(2)
                 async with asyncio.TaskGroup() as tg:
                     while queue:
                         await semaphore.acquire()
