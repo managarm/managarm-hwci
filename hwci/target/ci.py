@@ -13,6 +13,7 @@ import hwci.blockd.client
 import hwci.cas
 import hwci.target.aio
 import hwci.target.shelly
+import hwci.target.nanokvm
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +22,25 @@ logger = logging.getLogger(__name__)
 mock_devices = False
 
 
-class SwitchConfig(pydantic.BaseModel):
-    shelly: str
+class NanoKvmConfig(pydantic.BaseModel):
+    kind: typing.Literal["nanokvm"] = "nanokvm"
+    base_url: str
+    username: str
+    password: str
+
+
+class ShellyConfig(pydantic.BaseModel):
+    kind: typing.Literal["shelly"] = "shelly"
+    base_url: str
+
+
+SwitchConfig = typing.Annotated[
+    typing.Union[
+        NanoKvmConfig,
+        ShellyConfig,
+    ],
+    pydantic.Field(discriminator="kind"),
+]
 
 
 class DeviceConfig(pydantic.BaseModel):
@@ -92,9 +110,22 @@ class Device:
         self.cfg = cfg
         self.run = None
         self._uart_path = cfg.uart
-        self._switch = hwci.target.shelly.Switch(engine._http_client, cfg.switch.shelly)
         self._q = asyncio.Queue()
         self._image_extracted_sequence = None
+
+        if isinstance(cfg.switch, NanoKvmConfig):
+            self._switch = hwci.target.nanokvm.Switch(
+                engine._http_client,
+                cfg.switch.base_url,
+                username=cfg.switch.username,
+                password=cfg.switch.password,
+            )
+        elif isinstance(cfg.switch, ShellyConfig):
+            self._switch = hwci.target.shelly.Switch(
+                engine._http_client, cfg.switch.base_url
+            )
+        else:
+            raise RuntimeError("Unexpected switch configuration")
 
     async def run_dispatch_loop(self):
         while True:
