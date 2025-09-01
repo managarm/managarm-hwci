@@ -72,7 +72,7 @@ class Switch:
         if not self._token:
             await self._login()
         await nanokvm_post_gpio(
-            self.session, self.base_url, self._token, what="power", duration=800
+            self.session, self.base_url, self._token, what="power", duration=8000
         )
 
     async def _login(self):
